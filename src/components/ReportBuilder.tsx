@@ -1113,6 +1113,7 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
             coverPage: { ...prev.coverPage, fieldStyles: { ...prev.coverPage.fieldStyles, [focusedCoverField]: s } },
           })),
         } : null}
+        rbTheme={rbTheme}
       />
 
       {/* ── Body ── */}
@@ -1580,35 +1581,48 @@ type HFSettings = ReportData['headerFooter']
 function renderHeaderBand(hf: HFSettings, dp: DesignPack, isPrint: boolean): React.ReactNode {
   const style = hf.headerStyle || 'line'
   const bg = hf.headerBg || dp.primaryColor
-  // Print uses mm padding to match 20mm page margins; canvas uses Tailwind px-8 (2rem)
   const px = isPrint ? '20mm' : '2rem'
   const pyN = isPrint ? '4pt' : '0.5rem'
   const fs = isPrint ? '8pt' : undefined
 
-  const row = (children: React.ReactNode, extraStyle: React.CSSProperties = {}) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: px, paddingRight: px, paddingTop: pyN, paddingBottom: pyN, fontSize: fs, ...extraStyle }}>
-      {children}
+  const logoUrl = hf.headerLogoUrl
+  const logoAlign = hf.headerLogoAlign || 'left'
+  const logoImg = logoUrl
+    ? <img src={logoUrl} alt="" style={{ height: isPrint ? '18pt' : '22px', width: 'auto', objectFit: 'contain', flexShrink: 0, display: 'block' }} />
+    : null
+
+  const leftEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {logoImg && logoAlign === 'left' && logoImg}
+      <span style={{ fontWeight: 600 }}>{hf.headerLeft}</span>
+    </div>
+  )
+  const rightEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <span>{hf.headerRight}</span>
+      {logoImg && logoAlign === 'right' && logoImg}
     </div>
   )
 
-  if (style === 'band' || style === 'accent-band') {
-    return row(<><span style={{ fontWeight: 600 }}>{hf.headerLeft}</span><span style={{ opacity: 0.8 }}>{hf.headerRight}</span></>, { background: bg, color: '#fff' })
+  const wrapRow = (extraStyle: React.CSSProperties = {}): React.ReactNode => {
+    const base: React.CSSProperties = { display: 'flex', alignItems: 'center', paddingLeft: px, paddingRight: px, paddingTop: pyN, paddingBottom: pyN, fontSize: fs, ...extraStyle }
+    if (logoImg && logoAlign === 'center') {
+      return (
+        <div style={base}>
+          <div style={{ flex: 1 }}>{leftEl}</div>
+          <div style={{ padding: '0 12px' }}>{logoImg}</div>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>{rightEl}</div>
+        </div>
+      )
+    }
+    return <div style={{ ...base, justifyContent: 'space-between' }}>{leftEl}{rightEl}</div>
   }
-  if (style === 'double') {
-    return (
-      <div style={{ borderTop: `3px solid ${bg}`, borderBottom: `1px solid ${bg}`, color: bg, fontSize: fs }}>
-        {row(<><span style={{ fontWeight: 600 }}>{hf.headerLeft}</span><span>{hf.headerRight}</span></>)}
-      </div>
-    )
-  }
-  if (style === 'gradient') {
-    return row(<><span style={{ fontWeight: 600 }}>{hf.headerLeft}</span><span style={{ opacity: 0.8 }}>{hf.headerRight}</span></>, { background: `linear-gradient(90deg, ${bg} 0%, ${bg}44 100%)`, color: '#fff' })
-  }
-  if (style === 'minimal') {
-    return row(<><span>{hf.headerLeft}</span><span>{hf.headerRight}</span></>, { color: dp.textColor, opacity: 0.6 })
-  }
-  // default: 'line'
-  return row(<><span style={{ fontWeight: 600 }}>{hf.headerLeft}</span><span>{hf.headerRight}</span></>, { borderBottom: `2px solid ${bg}`, color: bg })
+
+  if (style === 'band' || style === 'accent-band') return wrapRow({ background: bg, color: '#fff' })
+  if (style === 'double') return <div style={{ borderTop: `3px solid ${bg}`, borderBottom: `1px solid ${bg}`, color: bg, fontSize: fs }}>{wrapRow()}</div>
+  if (style === 'gradient') return wrapRow({ background: `linear-gradient(90deg, ${bg} 0%, ${bg}44 100%)`, color: '#fff' })
+  if (style === 'minimal') return wrapRow({ color: dp.textColor, opacity: 0.6 })
+  return wrapRow({ borderBottom: `2px solid ${bg}`, color: bg })
 }
 
 function renderFooterBand(hf: HFSettings, dp: DesignPack, pageNum: number, isPrint = false): React.ReactNode {
@@ -1617,36 +1631,51 @@ function renderFooterBand(hf: HFSettings, dp: DesignPack, pageNum: number, isPri
   const px = isPrint ? '20mm' : '2rem'
   const pyN = isPrint ? '4pt' : '0.5rem'
   const fs = isPrint ? '8pt' : undefined
-  const pageEl = hf.showPageNumbers ? <span style={{ fontWeight: 600 }}>{pageNum}</span> : null
-  const right = <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span>{hf.footerRight}</span>{pageEl}</div>
 
-  const row = (children: React.ReactNode, extraStyle: React.CSSProperties = {}) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: px, paddingRight: px, paddingTop: pyN, paddingBottom: pyN, fontSize: fs, ...extraStyle }}>
-      {children}
+  const logoUrl = hf.footerLogoUrl
+  const logoAlign = hf.footerLogoAlign || 'left'
+  const logoImg = logoUrl
+    ? <img src={logoUrl} alt="" style={{ height: isPrint ? '16pt' : '20px', width: 'auto', objectFit: 'contain', flexShrink: 0, display: 'block' }} />
+    : null
+
+  const isLine = style === 'line'
+  const pageEl = hf.showPageNumbers
+    ? <span style={{ fontWeight: 600, ...(isLine ? { color: bg } : {}) }}>{pageNum}</span>
+    : null
+
+  const leftEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {logoImg && logoAlign === 'left' && logoImg}
+      <span>{hf.footerLeft}</span>
+    </div>
+  )
+  const rightEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      <span>{hf.footerRight}</span>
+      {pageEl}
+      {logoImg && logoAlign === 'right' && logoImg}
     </div>
   )
 
-  if (style === 'band' || style === 'accent-band') {
-    return row(<><span>{hf.footerLeft}</span>{right}</>, { background: bg, color: '#fff' })
+  const wrapRow = (extraStyle: React.CSSProperties = {}): React.ReactNode => {
+    const base: React.CSSProperties = { display: 'flex', alignItems: 'center', paddingLeft: px, paddingRight: px, paddingTop: pyN, paddingBottom: pyN, fontSize: fs, ...extraStyle }
+    if (logoImg && logoAlign === 'center') {
+      return (
+        <div style={base}>
+          <div style={{ flex: 1 }}>{leftEl}</div>
+          <div style={{ padding: '0 12px' }}>{logoImg}</div>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>{rightEl}</div>
+        </div>
+      )
+    }
+    return <div style={{ ...base, justifyContent: 'space-between' }}>{leftEl}{rightEl}</div>
   }
-  if (style === 'double') {
-    return (
-      <div style={{ borderTop: `1px solid ${bg}`, borderBottom: `3px solid ${bg}`, color: bg, fontSize: fs }}>
-        {row(<><span>{hf.footerLeft}</span>{right}</>)}
-      </div>
-    )
-  }
-  if (style === 'gradient') {
-    return row(<><span>{hf.footerLeft}</span>{right}</>, { background: `linear-gradient(90deg, ${bg}44 0%, ${bg} 100%)`, color: '#fff' })
-  }
-  if (style === 'minimal') {
-    return row(<><span>{hf.footerLeft}</span>{right}</>, { color: dp.textColor, opacity: 0.5 })
-  }
-  // default: 'line'
-  return row(
-    <><span>{hf.footerLeft}</span><div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span>{hf.footerRight}</span>{pageEl && <span style={{ color: bg }}>{pageEl}</span>}</div></>,
-    { borderTop: `1px solid ${bg}30`, color: dp.textColor }
-  )
+
+  if (style === 'band' || style === 'accent-band') return wrapRow({ background: bg, color: '#fff' })
+  if (style === 'double') return <div style={{ borderTop: `1px solid ${bg}`, borderBottom: `3px solid ${bg}`, color: bg, fontSize: fs }}>{wrapRow()}</div>
+  if (style === 'gradient') return wrapRow({ background: `linear-gradient(90deg, ${bg}44 0%, ${bg} 100%)`, color: '#fff' })
+  if (style === 'minimal') return wrapRow({ color: dp.textColor, opacity: 0.5 })
+  return wrapRow({ borderTop: `1px solid ${bg}30`, color: dp.textColor })
 }
 
 // ── Interactive (canvas-mode) header/footer bands ────────────────────────────
@@ -1659,32 +1688,44 @@ function CanvasHeaderBand({ hf, dp, onUpdate }: { hf: HFSettings; dp: DesignPack
   const px = '2rem'
   const py = '0.5rem'
 
-  const left = <InlineEditable value={hf.headerLeft} onChange={(v) => onUpdate('headerLeft', v)} placeholder="Header left" style={{ fontWeight: 600 }} />
-  const right = <InlineEditable value={hf.headerRight} onChange={(v) => onUpdate('headerRight', v)} placeholder="Header right" />
+  const logoUrl = hf.headerLogoUrl
+  const logoAlign = hf.headerLogoAlign || 'left'
+  const logoImg = logoUrl
+    ? <img src={logoUrl} alt="" style={{ height: '22px', width: 'auto', objectFit: 'contain', flexShrink: 0, display: 'block' }} />
+    : null
 
-  const row = (children: React.ReactNode, extraStyle: React.CSSProperties = {}) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: px, paddingRight: px, paddingTop: py, paddingBottom: py, ...extraStyle }}>
-      {children}
+  const leftEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {logoImg && logoAlign === 'left' && logoImg}
+      <InlineEditable value={hf.headerLeft} onChange={(v) => onUpdate('headerLeft', v)} placeholder="Header left" style={{ fontWeight: 600 }} />
+    </div>
+  )
+  const rightEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <InlineEditable value={hf.headerRight} onChange={(v) => onUpdate('headerRight', v)} placeholder="Header right" />
+      {logoImg && logoAlign === 'right' && logoImg}
     </div>
   )
 
-  if (style === 'band' || style === 'accent-band') {
-    return row(<>{left}{right}</>, { background: bg, color: '#fff' })
+  const wrapRow = (extraStyle: React.CSSProperties = {}) => {
+    const base: React.CSSProperties = { display: 'flex', alignItems: 'center', paddingLeft: px, paddingRight: px, paddingTop: py, paddingBottom: py, ...extraStyle }
+    if (logoImg && logoAlign === 'center') {
+      return (
+        <div style={base}>
+          <div style={{ flex: 1 }}>{leftEl}</div>
+          <div style={{ padding: '0 12px' }}>{logoImg}</div>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>{rightEl}</div>
+        </div>
+      )
+    }
+    return <div style={{ ...base, justifyContent: 'space-between' }}>{leftEl}{rightEl}</div>
   }
-  if (style === 'double') {
-    return (
-      <div style={{ borderTop: `3px solid ${bg}`, borderBottom: `1px solid ${bg}`, color: bg }}>
-        {row(<>{left}{right}</>)}
-      </div>
-    )
-  }
-  if (style === 'gradient') {
-    return row(<>{left}{right}</>, { background: `linear-gradient(90deg, ${bg} 0%, ${bg}44 100%)`, color: '#fff' })
-  }
-  if (style === 'minimal') {
-    return row(<>{left}{right}</>, { color: dp.textColor, opacity: 0.6 })
-  }
-  return row(<>{left}{right}</>, { borderBottom: `2px solid ${bg}`, color: bg })
+
+  if (style === 'band' || style === 'accent-band') return wrapRow({ background: bg, color: '#fff' })
+  if (style === 'double') return <div style={{ borderTop: `3px solid ${bg}`, borderBottom: `1px solid ${bg}`, color: bg }}>{wrapRow()}</div>
+  if (style === 'gradient') return wrapRow({ background: `linear-gradient(90deg, ${bg} 0%, ${bg}44 100%)`, color: '#fff' })
+  if (style === 'minimal') return wrapRow({ color: dp.textColor, opacity: 0.6 })
+  return wrapRow({ borderBottom: `2px solid ${bg}`, color: bg })
 }
 
 function CanvasFooterBand({ hf, dp, pageNum, onUpdate }: { hf: HFSettings; dp: DesignPack; pageNum: number; onUpdate: OnUpdateHF }) {
@@ -1692,39 +1733,48 @@ function CanvasFooterBand({ hf, dp, pageNum, onUpdate }: { hf: HFSettings; dp: D
   const bg = hf.footerBg || dp.primaryColor
   const px = '2rem'
   const py = '0.5rem'
+
+  const logoUrl = hf.footerLogoUrl
+  const logoAlign = hf.footerLogoAlign || 'left'
+  const logoImg = logoUrl
+    ? <img src={logoUrl} alt="" style={{ height: '20px', width: 'auto', objectFit: 'contain', flexShrink: 0, display: 'block' }} />
+    : null
+
   const pageEl = hf.showPageNumbers ? <span style={{ fontWeight: 600 }}>{pageNum}</span> : null
 
-  const leftEl = <InlineEditable value={hf.footerLeft} onChange={(v) => onUpdate('footerLeft', v)} placeholder="Footer left" />
+  const leftEl = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {logoImg && logoAlign === 'left' && logoImg}
+      <InlineEditable value={hf.footerLeft} onChange={(v) => onUpdate('footerLeft', v)} placeholder="Footer left" />
+    </div>
+  )
   const rightEl = (
     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
       <InlineEditable value={hf.footerRight} onChange={(v) => onUpdate('footerRight', v)} placeholder="Footer right" />
       {pageEl}
+      {logoImg && logoAlign === 'right' && logoImg}
     </div>
   )
 
-  const row = (children: React.ReactNode, extraStyle: React.CSSProperties = {}) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: px, paddingRight: px, paddingTop: py, paddingBottom: py, ...extraStyle }}>
-      {children}
-    </div>
-  )
+  const wrapRow = (extraStyle: React.CSSProperties = {}) => {
+    const base: React.CSSProperties = { display: 'flex', alignItems: 'center', paddingLeft: px, paddingRight: px, paddingTop: py, paddingBottom: py, ...extraStyle }
+    if (logoImg && logoAlign === 'center') {
+      return (
+        <div style={base}>
+          <div style={{ flex: 1 }}>{leftEl}</div>
+          <div style={{ padding: '0 12px' }}>{logoImg}</div>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end' }}>{rightEl}</div>
+        </div>
+      )
+    }
+    return <div style={{ ...base, justifyContent: 'space-between' }}>{leftEl}{rightEl}</div>
+  }
 
-  if (style === 'band' || style === 'accent-band') {
-    return row(<>{leftEl}{rightEl}</>, { background: bg, color: '#fff' })
-  }
-  if (style === 'double') {
-    return (
-      <div style={{ borderTop: `1px solid ${bg}`, borderBottom: `3px solid ${bg}`, color: bg }}>
-        {row(<>{leftEl}{rightEl}</>)}
-      </div>
-    )
-  }
-  if (style === 'gradient') {
-    return row(<>{leftEl}{rightEl}</>, { background: `linear-gradient(90deg, ${bg}44 0%, ${bg} 100%)`, color: '#fff' })
-  }
-  if (style === 'minimal') {
-    return row(<>{leftEl}{rightEl}</>, { color: dp.textColor, opacity: 0.5 })
-  }
-  return row(<>{leftEl}{rightEl}</>, { borderTop: `1px solid ${bg}30`, color: dp.textColor })
+  if (style === 'band' || style === 'accent-band') return wrapRow({ background: bg, color: '#fff' })
+  if (style === 'double') return <div style={{ borderTop: `1px solid ${bg}`, borderBottom: `3px solid ${bg}`, color: bg }}>{wrapRow()}</div>
+  if (style === 'gradient') return wrapRow({ background: `linear-gradient(90deg, ${bg}44 0%, ${bg} 100%)`, color: '#fff' })
+  if (style === 'minimal') return wrapRow({ color: dp.textColor, opacity: 0.5 })
+  return wrapRow({ borderTop: `1px solid ${bg}30`, color: dp.textColor })
 }
 
 // ── Cover Page View ─────────────────────────────────────────────────────────
@@ -3766,7 +3816,7 @@ type CoverFieldFocus = {
 }
 
 function FormatToolbar({
-  selectedBlock, tableFormatAPI, dp, onQuickUpdate, onMoveUp, onMoveDown, onDelete, coverField,
+  selectedBlock, tableFormatAPI, dp, onQuickUpdate, onMoveUp, onMoveDown, onDelete, coverField, rbTheme,
 }: {
   selectedBlock: ReportBlock | null
   tableFormatAPI: TableFormatAPI | null
@@ -3776,6 +3826,7 @@ function FormatToolbar({
   onMoveDown?: () => void
   onDelete?: () => void
   coverField?: CoverFieldFocus | null
+  rbTheme: 'dark' | 'light'
 }) {
   // Border picker state — always declared so hook order is stable
   const [bStyle, setBStyle] = useState<CellBorder['style']>('solid')
@@ -3932,6 +3983,7 @@ function FormatToolbar({
             <div
               className="fixed z-[9999] w-72 rounded-lg border border-[var(--rb-border-md)] bg-[var(--rb-panel)] p-3 shadow-2xl"
               style={{ top: borderPanelPos.top, left: borderPanelPos.left }}
+              data-rb-theme={rbTheme}
             >
               {/* Line style + color */}
               <div className="mb-2">
@@ -4953,7 +5005,7 @@ const QUICK_PRESETS = [
 
 function DesignStudioSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <details open className="group">
+    <details className="group">
       <summary className="flex cursor-pointer items-center justify-between py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rb-text-3)] hover:text-[var(--rb-text)]">
         {title}
         <svg className="h-3 w-3 transition group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
@@ -5294,6 +5346,23 @@ function DesignStudio({ report, onUpdateReport }: { report: ReportData; onUpdate
                 <input type="color" value={report.headerFooter.headerBg || '#1E3A5F'} onChange={(e) => upHF('headerBg', e.target.value)} className="h-7 w-full cursor-pointer rounded" />
               </div>
             </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-slate-500">Header Logo</label>
+              <ImageUploadField value={report.headerFooter.headerLogoUrl || ''} onChange={(url) => upHF('headerLogoUrl', url || undefined)} placeholder="Logo URL or upload" />
+              {report.headerFooter.headerLogoUrl && (
+                <div className="mt-1.5">
+                  <label className="mb-1 block text-[10px] text-slate-500">Logo Position</label>
+                  <div className="flex gap-1">
+                    {(['left', 'center', 'right'] as const).map((a) => (
+                      <button key={a} onClick={() => upHF('headerLogoAlign', a)}
+                        className={`flex-1 rounded border py-1 text-[10px] transition ${(report.headerFooter.headerLogoAlign || 'left') === a ? 'border-[#C9A84C] text-[#C9A84C]' : 'border-white/10 text-slate-500 hover:border-white/30 hover:text-slate-300'}`}>
+                        {a === 'left' ? '← Left' : a === 'center' ? '↔ Center' : 'Right →'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </>
         )}
 
@@ -5326,6 +5395,23 @@ function DesignStudio({ report, onUpdateReport }: { report: ReportData; onUpdate
                 <label className="mb-1 block text-[10px] text-slate-500">Footer Color</label>
                 <input type="color" value={report.headerFooter.footerBg || '#1E3A5F'} onChange={(e) => upHF('footerBg', e.target.value)} className="h-7 w-full cursor-pointer rounded" />
               </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-slate-500">Footer Logo</label>
+              <ImageUploadField value={report.headerFooter.footerLogoUrl || ''} onChange={(url) => upHF('footerLogoUrl', url || undefined)} placeholder="Logo URL or upload" />
+              {report.headerFooter.footerLogoUrl && (
+                <div className="mt-1.5">
+                  <label className="mb-1 block text-[10px] text-slate-500">Logo Position</label>
+                  <div className="flex gap-1">
+                    {(['left', 'center', 'right'] as const).map((a) => (
+                      <button key={a} onClick={() => upHF('footerLogoAlign', a)}
+                        className={`flex-1 rounded border py-1 text-[10px] transition ${(report.headerFooter.footerLogoAlign || 'left') === a ? 'border-[#C9A84C] text-[#C9A84C]' : 'border-white/10 text-slate-500 hover:border-white/30 hover:text-slate-300'}`}>
+                        {a === 'left' ? '← Left' : a === 'center' ? '↔ Center' : 'Right →'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}
@@ -5689,6 +5775,20 @@ function DocumentPanel({ report, onUpdateReport }: { report: ReportData; onUpdat
                 </div>
               </div>
               <input type="color" value={report.headerFooter.headerBg || '#1E3A5F'} onChange={(e) => upHF('headerBg', e.target.value)} className="h-7 w-full cursor-pointer rounded" title="Header color" />
+              <div>
+                <label className="mb-1 block text-[10px] text-slate-500">Header Logo</label>
+                <ImageUploadField value={report.headerFooter.headerLogoUrl || ''} onChange={(url) => upHF('headerLogoUrl', url || undefined)} placeholder="Logo URL or upload" />
+                {report.headerFooter.headerLogoUrl && (
+                  <div className="mt-1.5 flex gap-1">
+                    {(['left', 'center', 'right'] as const).map((a) => (
+                      <button key={a} onClick={() => upHF('headerLogoAlign', a)}
+                        className={`flex-1 rounded border py-1 text-[10px] transition ${(report.headerFooter.headerLogoAlign || 'left') === a ? 'border-[#C9A84C] text-[#C9A84C]' : 'border-white/10 text-slate-500 hover:border-white/30'}`}>
+                        {a === 'left' ? '← Left' : a === 'center' ? '↔ Ctr' : 'Right →'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           )}
           <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
@@ -5715,6 +5815,20 @@ function DocumentPanel({ report, onUpdateReport }: { report: ReportData; onUpdat
                 </div>
               </div>
               <input type="color" value={report.headerFooter.footerBg || '#1E3A5F'} onChange={(e) => upHF('footerBg', e.target.value)} className="h-7 w-full cursor-pointer rounded" title="Footer color" />
+              <div>
+                <label className="mb-1 block text-[10px] text-slate-500">Footer Logo</label>
+                <ImageUploadField value={report.headerFooter.footerLogoUrl || ''} onChange={(url) => upHF('footerLogoUrl', url || undefined)} placeholder="Logo URL or upload" />
+                {report.headerFooter.footerLogoUrl && (
+                  <div className="mt-1.5 flex gap-1">
+                    {(['left', 'center', 'right'] as const).map((a) => (
+                      <button key={a} onClick={() => upHF('footerLogoAlign', a)}
+                        className={`flex-1 rounded border py-1 text-[10px] transition ${(report.headerFooter.footerLogoAlign || 'left') === a ? 'border-[#C9A84C] text-[#C9A84C]' : 'border-white/10 text-slate-500 hover:border-white/30'}`}>
+                        {a === 'left' ? '← Left' : a === 'center' ? '↔ Ctr' : 'Right →'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>

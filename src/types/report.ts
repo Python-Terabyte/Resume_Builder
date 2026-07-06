@@ -376,11 +376,15 @@ export interface ReportData {
     headerRight: string
     headerStyle?: 'line' | 'band' | 'double' | 'gradient' | 'accent-band' | 'minimal'
     headerBg?: string
+    headerLogoUrl?: string
+    headerLogoAlign?: 'left' | 'center' | 'right'
     showFooter: boolean
     footerLeft: string
     footerRight: string
     footerStyle?: 'line' | 'band' | 'double' | 'gradient' | 'accent-band' | 'minimal'
     footerBg?: string
+    footerLogoUrl?: string
+    footerLogoAlign?: 'left' | 'center' | 'right'
     showPageNumbers: boolean
   }
   watermark: {
