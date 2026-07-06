@@ -684,7 +684,7 @@ function LandingPage() {
         <h1 className="anim-hero mt-2 text-3xl font-bold leading-tight tracking-tight text-white sm:text-5xl lg:text-6xl">
           Create Professional Documents
           <span className="mt-1 block">
-            <span className="anim-shimmer">That Make an Impact</span>
+            <span>That Make an Impact</span>
           </span>
         </h1>
 

@@ -76,6 +76,18 @@
   --rb-orb-teal:  rgba(13,144,128,.05);
 }
 
+/* Native <select>/<option> elements ignore CSS custom properties in the
+   browser's native dropdown popup. Override with literal colors per theme. */
+[data-rb-theme="light"] select,
+[data-rb-theme="light"] select option {
+  background-color: #FDFCFB;
+  color: #120B07;
+}
+[data-rb-theme="dark"] select option {
+  background-color: #120B07;
+  color: #ffffff;
+}
+
 * {
   box-sizing: border-box;
 }
