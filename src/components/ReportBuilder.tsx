@@ -7151,6 +7151,34 @@ function ChartBlockView({ block, dp, forPrint = false, isSelected, onUpdate }: {
 
 // ── Chart Editor ────────────────────────────────────────────────────────────
 
+function ChartDataCell({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [text, setText] = useState(String(value))
+  const committed = useRef(value)
+  if (committed.current !== value && text === String(committed.current)) {
+    setText(String(value))
+  }
+  committed.current = value
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value)
+        const n = parseFloat(e.target.value)
+        if (!isNaN(n)) onChange(n)
+      }}
+      onBlur={() => {
+        const n = parseFloat(text)
+        const final = isNaN(n) ? 0 : n
+        onChange(final)
+        setText(String(final))
+      }}
+      className="w-full rounded bg-transparent px-1 py-0.5 text-right text-[11px] text-[var(--rb-text)] outline-none focus:bg-[var(--rb-hover)]"
+    />
+  )
+}
+
 function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Record<string, unknown>) => void }) {
   const inputCls = 'w-full rounded border border-[var(--rb-border)] bg-[var(--rb-input)] px-1.5 py-1 text-xs text-[var(--rb-text)] outline-none focus:border-[var(--rb-gold)]'
   const label = (t: string) => <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-500">{t}</label>
@@ -7160,13 +7188,17 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
   }
 
   function addDataset() {
-    const newDs: ChartDataset = {
-      id: uuidv4(),
-      label: `Series ${block.datasets.length + 1}`,
-      data: block.labels.map(() => 0),
-      color: CHART_PALETTE[block.datasets.length % CHART_PALETTE.length],
-    }
-    onUpdate({ datasets: [...block.datasets, newDs] })
+    onUpdate({
+      datasets: [
+        ...block.datasets,
+        {
+          id: uuidv4(),
+          label: `Series ${block.datasets.length + 1}`,
+          data: block.labels.map(() => 0),
+          color: CHART_PALETTE[block.datasets.length % CHART_PALETTE.length],
+        },
+      ],
+    })
   }
 
   function removeDataset(id: string) {
@@ -7174,18 +7206,34 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
     onUpdate({ datasets: block.datasets.filter((ds) => ds.id !== id) })
   }
 
-  function updateLabels(raw: string) {
-    const labels = raw.split('\n').map((s) => s.trim()).filter(Boolean)
-    const datasets = block.datasets.map((ds) => ({
-      ...ds,
-      data: labels.map((_, i) => ds.data[i] ?? 0),
-    }))
-    onUpdate({ labels, datasets })
+  function updateLabel(rowIdx: number, val: string) {
+    const labels = [...block.labels]
+    labels[rowIdx] = val
+    onUpdate({ labels })
   }
 
-  function updateDatasetValues(id: string, raw: string) {
-    const data = raw.split(',').map((s) => parseFloat(s.trim()) || 0)
-    updDataset(id, 'data', data)
+  function updateCell(dsId: string, rowIdx: number, val: number) {
+    onUpdate({
+      datasets: block.datasets.map((ds) => ds.id !== dsId ? ds : {
+        ...ds,
+        data: ds.data.map((v, i) => i === rowIdx ? val : v),
+      }),
+    })
+  }
+
+  function addRow() {
+    onUpdate({
+      labels: [...block.labels, `Label ${block.labels.length + 1}`],
+      datasets: block.datasets.map((ds) => ({ ...ds, data: [...ds.data, 0] })),
+    })
+  }
+
+  function removeRow(rowIdx: number) {
+    if (block.labels.length <= 1) return
+    onUpdate({
+      labels: block.labels.filter((_, i) => i !== rowIdx),
+      datasets: block.datasets.map((ds) => ({ ...ds, data: ds.data.filter((_, i) => i !== rowIdx) })),
+    })
   }
 
   return (
@@ -7224,40 +7272,75 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
         </label>
       </div>
 
+      {/* Data table */}
       <div>
-        {label('Labels (one per line)')}
-        <textarea
-          value={block.labels.join('\n')}
-          onChange={(e) => updateLabels(e.target.value)}
-          rows={5}
-          className={`${inputCls} resize-none`}
-        />
-      </div>
-
-      <div>
-        <div className="mb-1.5 flex items-center justify-between">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Datasets</span>
-          <button onClick={addDataset} className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400 hover:text-[#C9A84C]">+ Add</button>
-        </div>
-        <div className="flex flex-col gap-2">
-          {block.datasets.map((ds) => (
-            <div key={ds.id} className="rounded border border-white/10 p-2">
-              <div className="mb-1.5 flex items-center gap-1.5">
-                <input value={ds.label} onChange={(e) => updDataset(ds.id, 'label', e.target.value)} className={`${inputCls} flex-1`} />
-                <input type="color" value={ds.color} onChange={(e) => updDataset(ds.id, 'color', e.target.value)} className="h-6 w-8 shrink-0 cursor-pointer rounded" />
-                {block.datasets.length > 1 && (
-                  <button onClick={() => removeDataset(ds.id)} className="shrink-0 text-slate-500 hover:text-red-400">✕</button>
-                )}
-              </div>
-              <div>{label('Values (comma-separated)')}</div>
-              <input
-                value={ds.data.join(', ')}
-                onChange={(e) => updateDatasetValues(ds.id, e.target.value)}
-                className={inputCls}
-                placeholder="65, 59, 80, 81, 56, 72"
-              />
-            </div>
-          ))}
+        {label('Data')}
+        <div className="overflow-x-auto rounded border border-[var(--rb-border)]">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-[var(--rb-border)] bg-[var(--rb-hover)]">
+                <th className="w-[72px] px-1.5 py-1 text-left text-[9px] font-semibold uppercase tracking-wide text-[var(--rb-text-3)]">
+                  Label
+                </th>
+                {block.datasets.map((ds) => (
+                  <th key={ds.id} className="min-w-[58px] px-1 py-1">
+                    <div className="flex items-center gap-0.5">
+                      <input
+                        value={ds.label}
+                        onChange={(e) => updDataset(ds.id, 'label', e.target.value)}
+                        className="min-w-0 flex-1 rounded bg-transparent px-1 py-0.5 text-[10px] font-semibold text-[var(--rb-text)] outline-none focus:bg-[var(--rb-hover-md)]"
+                      />
+                      <input type="color" value={ds.color} onChange={(e) => updDataset(ds.id, 'color', e.target.value)}
+                        className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-0 p-0" title="Series colour" />
+                      {block.datasets.length > 1 && (
+                        <button onClick={() => removeDataset(ds.id)}
+                          className="shrink-0 text-[8px] leading-none text-[var(--rb-text-3)] hover:text-red-400" title="Remove series">✕</button>
+                      )}
+                    </div>
+                  </th>
+                ))}
+                <th className="w-6 px-1 py-1 text-center">
+                  <button onClick={addDataset}
+                    className="text-[13px] font-bold leading-none text-[var(--rb-gold)] hover:opacity-70 transition" title="Add series">+</button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {block.labels.map((lbl, rowIdx) => (
+                <tr key={rowIdx} className="border-b border-[var(--rb-border)] last:border-0 hover:bg-[var(--rb-hover)] transition-colors">
+                  <td className="px-1 py-0.5">
+                    <input
+                      value={lbl}
+                      onChange={(e) => updateLabel(rowIdx, e.target.value)}
+                      className="w-full rounded bg-transparent px-1 py-0.5 text-[11px] text-[var(--rb-text)] outline-none focus:bg-[var(--rb-hover-md)]"
+                    />
+                  </td>
+                  {block.datasets.map((ds) => (
+                    <td key={ds.id} className="px-1 py-0.5">
+                      <ChartDataCell
+                        value={ds.data[rowIdx] ?? 0}
+                        onChange={(n) => updateCell(ds.id, rowIdx, n)}
+                      />
+                    </td>
+                  ))}
+                  <td className="px-1 py-0.5 text-center">
+                    <button onClick={() => removeRow(rowIdx)} disabled={block.labels.length <= 1}
+                      className="text-[9px] leading-none text-[var(--rb-text-3)] hover:text-red-400 disabled:opacity-25 transition">✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-[var(--rb-border)]">
+                <td colSpan={block.datasets.length + 2} className="px-1.5 py-1">
+                  <button onClick={addRow}
+                    className="text-[10px] text-[var(--rb-text-3)] hover:text-[var(--rb-gold)] transition">
+                    + Add row
+                  </button>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
       </div>
     </div>
