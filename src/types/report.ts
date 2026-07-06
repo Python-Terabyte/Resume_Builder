@@ -190,6 +190,7 @@ export interface ChartBlock {
   chartType: ChartType
   labels: string[]
   datasets: ChartDataset[]
+  rowColors?: string[]
   height: number
   showLegend: boolean
   showGrid: boolean

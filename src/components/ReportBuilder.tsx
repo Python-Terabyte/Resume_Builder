@@ -7009,6 +7009,9 @@ function ChartBlockView({ block, dp, forPrint = false, isSelected, onUpdate }: {
   const showLabels = block.showLabels !== false // default true for old blocks without field
 
   let chart: React.ReactNode
+  const rowColor = (i: number, fallback: string) =>
+    block.rowColors?.[i] || fallback
+
   if (block.chartType === 'pie' || block.chartType === 'donut') {
     chart = (
       <PieChart>
@@ -7027,7 +7030,7 @@ function ChartBlockView({ block, dp, forPrint = false, isSelected, onUpdate }: {
           labelLine={showLabels}
         >
           {pieData.map((_, i) => (
-            <Cell key={i} fill={block.datasets[0]?.color ? (i === 0 ? block.datasets[0].color : CHART_PALETTE[i % CHART_PALETTE.length]) : CHART_PALETTE[i % CHART_PALETTE.length]} />
+            <Cell key={i} fill={rowColor(i, CHART_PALETTE[i % CHART_PALETTE.length])} />
           ))}
         </Pie>
         {ttEl}
@@ -7038,8 +7041,11 @@ function ChartBlockView({ block, dp, forPrint = false, isSelected, onUpdate }: {
     chart = (
       <BarChart {...commonProps}>
         {gridEl}{xEl}{yEl}{ttEl}{lgEl}
-        {block.datasets.map((ds) => (
+        {block.datasets.map((ds, dsi) => (
           <Bar key={ds.id} dataKey={ds.label} fill={ds.color} radius={[2, 2, 0, 0]} isAnimationActive={false}>
+            {block.rowColors && block.labels.map((_, i) => (
+              <Cell key={i} fill={rowColor(i, dsi === 0 ? ds.color : CHART_PALETTE[(dsi + i) % CHART_PALETTE.length])} />
+            ))}
             {showLabels && <LabelList dataKey={ds.label} position="top" style={{ fontSize: 9, fill: '#6B7280' }} />}
           </Bar>
         ))}
@@ -7182,6 +7188,7 @@ function ChartDataCell({ value, onChange }: { value: number; onChange: (n: numbe
 function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Record<string, unknown>) => void }) {
   const inputCls = 'w-full rounded border border-[var(--rb-border)] bg-[var(--rb-input)] px-1.5 py-1 text-xs text-[var(--rb-text)] outline-none focus:border-[var(--rb-gold)]'
   const label = (t: string) => <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-500">{t}</label>
+  const [pasteError, setPasteError] = useState('')
 
   function updDataset(id: string, field: keyof ChartDataset, val: unknown) {
     onUpdate({ datasets: block.datasets.map((ds) => ds.id !== id ? ds : { ...ds, [field]: val }) })
@@ -7221,10 +7228,19 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
     })
   }
 
+  function updateRowColor(rowIdx: number, color: string) {
+    const base = block.rowColors ?? block.labels.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length])
+    const next = [...base]
+    next[rowIdx] = color
+    onUpdate({ rowColors: next })
+  }
+
   function addRow() {
+    const newIdx = block.labels.length
     onUpdate({
-      labels: [...block.labels, `Label ${block.labels.length + 1}`],
+      labels: [...block.labels, `Label ${newIdx + 1}`],
       datasets: block.datasets.map((ds) => ({ ...ds, data: [...ds.data, 0] })),
+      rowColors: block.rowColors ? [...block.rowColors, CHART_PALETTE[newIdx % CHART_PALETTE.length]] : undefined,
     })
   }
 
@@ -7233,8 +7249,55 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
     onUpdate({
       labels: block.labels.filter((_, i) => i !== rowIdx),
       datasets: block.datasets.map((ds) => ({ ...ds, data: ds.data.filter((_, i) => i !== rowIdx) })),
+      rowColors: block.rowColors?.filter((_, i) => i !== rowIdx),
     })
   }
+
+  // ── Paste from Excel / clipboard ───────────────────────────────────────────
+  function applyPastedText(text: string) {
+    const rows = text.trim().split(/\r?\n/).map((r) => r.split('\t'))
+    if (rows.length === 0 || rows[0].length === 0) return
+
+    // Detect header row: first row whose non-label cells contain non-numeric values
+    const firstRow = rows[0]
+    const hasHeader = firstRow.length > 1 && firstRow.slice(1).some((c) => c.trim() !== '' && isNaN(parseFloat(c.trim())))
+
+    const headerRow = hasHeader ? firstRow : null
+    const dataRows  = hasHeader ? rows.slice(1) : rows
+
+    if (dataRows.length === 0) return
+
+    const seriesCount = Math.max(...dataRows.map((r) => r.length - 1), headerRow ? headerRow.length - 1 : 0, 1)
+    const newLabels   = dataRows.map((r) => r[0]?.trim() ?? '')
+    const newDatasets = Array.from({ length: seriesCount }, (_, si) => ({
+      id:    block.datasets[si]?.id    ?? uuidv4(),
+      label: headerRow?.[si + 1]?.trim() || block.datasets[si]?.label || `Series ${si + 1}`,
+      color: block.datasets[si]?.color ?? CHART_PALETTE[si % CHART_PALETTE.length],
+      data:  dataRows.map((r) => parseFloat(r[si + 1]?.trim() ?? '') || 0),
+    }))
+
+    onUpdate({ labels: newLabels, datasets: newDatasets, rowColors: undefined })
+    setPasteError('')
+  }
+
+  async function handlePasteButton() {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (!text.trim()) { setPasteError('Clipboard is empty.'); return }
+      applyPastedText(text)
+    } catch {
+      setPasteError('Clipboard access denied — copy your data in Excel/Sheets then try again.')
+    }
+  }
+
+  function handleTablePaste(e: React.ClipboardEvent) {
+    const text = e.clipboardData.getData('text/plain')
+    if (!text.includes('\t')) return  // not tabular, let default paste happen
+    e.preventDefault()
+    applyPastedText(text)
+  }
+
+  const colCount = block.datasets.length + 3 // label + datasets + color + delete
 
   return (
     <div className="flex flex-col gap-3">
@@ -7274,16 +7337,28 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
 
       {/* Data table */}
       <div>
-        {label('Data')}
-        <div className="overflow-x-auto rounded border border-[var(--rb-border)]">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Data</span>
+          <button
+            onClick={handlePasteButton}
+            className="flex items-center gap-1 rounded border border-[var(--rb-border-md)] px-2 py-0.5 text-[10px] text-[var(--rb-text-2)] transition hover:border-[var(--rb-gold)] hover:text-[var(--rb-gold)]"
+            title="Paste tab-separated data from Excel or Google Sheets"
+          >
+            ⬇ Paste from Excel
+          </button>
+        </div>
+        {pasteError && (
+          <p className="mb-1.5 rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-400">{pasteError}</p>
+        )}
+        <div className="overflow-x-auto rounded border border-[var(--rb-border)]" onPaste={handleTablePaste}>
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-[var(--rb-border)] bg-[var(--rb-hover)]">
-                <th className="w-[72px] px-1.5 py-1 text-left text-[9px] font-semibold uppercase tracking-wide text-[var(--rb-text-3)]">
+                <th className="w-[68px] px-1.5 py-1 text-left text-[9px] font-semibold uppercase tracking-wide text-[var(--rb-text-3)]">
                   Label
                 </th>
                 {block.datasets.map((ds) => (
-                  <th key={ds.id} className="min-w-[58px] px-1 py-1">
+                  <th key={ds.id} className="min-w-[54px] px-1 py-1">
                     <div className="flex items-center gap-0.5">
                       <input
                         value={ds.label}
@@ -7303,36 +7378,52 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
                   <button onClick={addDataset}
                     className="text-[13px] font-bold leading-none text-[var(--rb-gold)] hover:opacity-70 transition" title="Add series">+</button>
                 </th>
+                <th className="w-6 px-1 py-1 text-center text-[9px] font-semibold uppercase tracking-wide text-[var(--rb-text-3)]" title="Row colour">◉</th>
+                <th className="w-5" />
               </tr>
             </thead>
             <tbody>
-              {block.labels.map((lbl, rowIdx) => (
-                <tr key={rowIdx} className="border-b border-[var(--rb-border)] last:border-0 hover:bg-[var(--rb-hover)] transition-colors">
-                  <td className="px-1 py-0.5">
-                    <input
-                      value={lbl}
-                      onChange={(e) => updateLabel(rowIdx, e.target.value)}
-                      className="w-full rounded bg-transparent px-1 py-0.5 text-[11px] text-[var(--rb-text)] outline-none focus:bg-[var(--rb-hover-md)]"
-                    />
-                  </td>
-                  {block.datasets.map((ds) => (
-                    <td key={ds.id} className="px-1 py-0.5">
-                      <ChartDataCell
-                        value={ds.data[rowIdx] ?? 0}
-                        onChange={(n) => updateCell(ds.id, rowIdx, n)}
+              {block.labels.map((lbl, rowIdx) => {
+                const rc = block.rowColors?.[rowIdx] ?? CHART_PALETTE[rowIdx % CHART_PALETTE.length]
+                return (
+                  <tr key={rowIdx} className="border-b border-[var(--rb-border)] last:border-0 hover:bg-[var(--rb-hover)] transition-colors">
+                    <td className="px-1 py-0.5">
+                      <input
+                        value={lbl}
+                        onChange={(e) => updateLabel(rowIdx, e.target.value)}
+                        className="w-full rounded bg-transparent px-1 py-0.5 text-[11px] text-[var(--rb-text)] outline-none focus:bg-[var(--rb-hover-md)]"
                       />
                     </td>
-                  ))}
-                  <td className="px-1 py-0.5 text-center">
-                    <button onClick={() => removeRow(rowIdx)} disabled={block.labels.length <= 1}
-                      className="text-[9px] leading-none text-[var(--rb-text-3)] hover:text-red-400 disabled:opacity-25 transition">✕</button>
-                  </td>
-                </tr>
-              ))}
+                    {block.datasets.map((ds) => (
+                      <td key={ds.id} className="px-1 py-0.5">
+                        <ChartDataCell
+                          value={ds.data[rowIdx] ?? 0}
+                          onChange={(n) => updateCell(ds.id, rowIdx, n)}
+                        />
+                      </td>
+                    ))}
+                    {/* spacer under the + add-series column */}
+                    <td />
+                    <td className="px-1 py-0.5 text-center">
+                      <input
+                        type="color"
+                        value={rc}
+                        onChange={(e) => updateRowColor(rowIdx, e.target.value)}
+                        className="h-4 w-4 cursor-pointer rounded border-0 p-0"
+                        title="Row colour"
+                      />
+                    </td>
+                    <td className="px-1 py-0.5 text-center">
+                      <button onClick={() => removeRow(rowIdx)} disabled={block.labels.length <= 1}
+                        className="text-[9px] leading-none text-[var(--rb-text-3)] hover:text-red-400 disabled:opacity-25 transition">✕</button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
             <tfoot>
               <tr className="border-t border-[var(--rb-border)]">
-                <td colSpan={block.datasets.length + 2} className="px-1.5 py-1">
+                <td colSpan={colCount} className="px-1.5 py-1">
                   <button onClick={addRow}
                     className="text-[10px] text-[var(--rb-text-3)] hover:text-[var(--rb-gold)] transition">
                     + Add row
@@ -7342,6 +7433,7 @@ function ChartEditor({ block, onUpdate }: { block: ChartBlock; onUpdate: (u: Rec
             </tfoot>
           </table>
         </div>
+        <p className="mt-1 text-[9px] text-[var(--rb-text-3)]">Tip: copy cells in Excel or Sheets and paste directly into the table.</p>
       </div>
     </div>
   )
