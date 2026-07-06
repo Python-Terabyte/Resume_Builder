@@ -6938,8 +6938,17 @@ function ImageUploadField({ value, onChange, placeholder }: { value: string; onC
       setSizeWarning('')
     }
     const reader = new FileReader()
-    reader.onload = () => onChange(reader.result as string)
+    reader.onload = () => {
+      onChange(reader.result as string)
+      if (fileRef.current) fileRef.current.value = ''
+    }
     reader.readAsDataURL(file)
+  }
+
+  function handleRemove() {
+    onChange('')
+    if (fileRef.current) fileRef.current.value = ''
+    setSizeWarning('')
   }
 
   return (
@@ -6964,7 +6973,7 @@ function ImageUploadField({ value, onChange, placeholder }: { value: string; onC
         <div className="flex items-center gap-1.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={value} alt="" className="h-10 w-10 rounded object-contain border border-white/10" />
-          <button onClick={() => onChange('')} className="text-[10px] text-slate-500 hover:text-red-400">Remove</button>
+          <button onClick={handleRemove} className="text-[10px] text-slate-500 hover:text-red-400">Remove</button>
         </div>
       )}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
