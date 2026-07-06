@@ -258,7 +258,7 @@ input[type='range']:focus {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: shimmerText 4s linear infinite;
+  animation: shimmerText 10s linear infinite;
 }
 .card-reveal    { animation: cardReveal .7s ease both; }
 
