@@ -35,20 +35,10 @@ function BlockView({ block, dp }: { block: ReportBlock; dp: DesignPack }) {
         </div>
       )
     case 'table': {
-      const colWidth = `${100 / (block.headers.length || 1)}%`
       return (
         <div style={{ marginBottom: '1rem', overflowX: 'auto' }}>
           {block.caption && <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: '0.4rem', fontStyle: 'italic' }}>{block.caption}</p>}
           <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', wordBreak: 'break-word', fontSize: '0.8rem', fontFamily: dp.fontFamily }}>
-            <thead>
-              <tr>
-                {block.headers.map((h, i) => (
-                  <th key={i} style={{ background: dp.tableHeaderBg, color: dp.tableHeaderText, padding: '8px 10px', textAlign: 'left', width: colWidth }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
             <tbody>
               {block.rows.map((row, ri) => (
                 <tr key={ri} style={{ background: block.striped && ri % 2 === 1 ? '#F9FAFB' : '#FFF' }}>

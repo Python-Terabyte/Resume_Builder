@@ -1999,7 +1999,7 @@ function ReportPageView({
     <div
       ref={containerRef}
       id={`page-view-${page.id}`}
-      className={`relative w-full max-w-[760px] rounded-lg shadow-xl transition-all ${
+      className={`relative flex w-full max-w-[760px] flex-col rounded-lg shadow-xl transition-all ${
         isSelectedPage ? 'ring-2 ring-[#C9A84C]/40' : ''
       }`}
       onClick={onSelectPage}
@@ -2035,8 +2035,9 @@ function ReportPageView({
       {/* Page header band */}
       {report.headerFooter.showHeader && <CanvasHeaderBand hf={report.headerFooter} dp={dp} onUpdate={onUpdateHF} />}
 
-      {/* Page content */}
+      {/* Page content — flex:1 pushes footer to the bottom of the page */}
       <div style={{
+        flex: '1',
         padding: `${contentPadPx}px`,
         paddingTop: report.headerFooter.showHeader ? `${headerGapPx}px` : `${contentPadPx}px`,
         paddingBottom: report.headerFooter.showFooter ? `${headerGapPx}px` : `${contentPadPx}px`,
@@ -2393,18 +2394,16 @@ function BlockContent({ block, dp, report, isSelected, onUpdate }: {
       )
 
     case 'table': {
-      const headerBg = block.headerBg || dp.tableHeaderBg
-      const headerText = block.headerText || dp.tableHeaderText
       const brd = block.borders
       const numCols = block.headers.length
-      const totalRows = 1 + block.rows.length  // header row + body rows
-      const globalBrd = (absRow: number, ci: number): React.CSSProperties => {
-        if (brd) return computeTableCellBorders(brd, absRow === 0, absRow === totalRows - 1, ci === 0, ci === numCols - 1)
-        const b = block.bordered ? (absRow === 0 ? `1px solid ${headerBg}30` : '1px solid #E5E7EB') : 'none'
+      const totalRows = block.rows.length
+      const globalBrd = (rIdx: number, ci: number): React.CSSProperties => {
+        if (brd) return computeTableCellBorders(brd, rIdx === 0, rIdx === totalRows - 1, ci === 0, ci === numCols - 1)
+        const b = block.bordered ? '1px solid #E5E7EB' : 'none'
         return { borderTop: b, borderBottom: b, borderLeft: b, borderRight: b }
       }
-      const cellBrd = (absRow: number, ci: number, cell?: TableCell): React.CSSProperties => {
-        const g = globalBrd(absRow, ci)
+      const cellBrd = (rIdx: number, ci: number, cell?: TableCell): React.CSSProperties => {
+        const g = globalBrd(rIdx, ci)
         const sb = cell?.sideBorders
         if (!sb) return g
         return {
@@ -2418,16 +2417,6 @@ function BlockContent({ block, dp, report, isSelected, onUpdate }: {
         <div>
           {block.caption && <p className="mb-1.5 text-xs text-gray-500 italic">{block.caption}</p>}
           <table className="w-full" style={{ fontFamily: dp.fontFamily, borderCollapse: 'collapse', fontSize: '13px', tableLayout: 'fixed', wordBreak: 'break-word' }}>
-            <thead>
-              <tr>
-                {block.headers.map((h, ci) => (
-                  <th key={ci} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide"
-                    style={{ background: headerBg, color: headerText, overflowWrap: 'break-word', ...cellBrd(0, ci) }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
             <tbody>
               {block.rows.map((row, rIdx) => (
                 <tr key={rIdx} style={{ background: block.striped && rIdx % 2 === 1 ? '#F8FAFC' : 'white' }}>
@@ -2438,7 +2427,7 @@ function BlockContent({ block, dp, report, isSelected, onUpdate }: {
                       color: cell.color || dp.textColor, background: cell.bgColor || 'transparent',
                       paddingTop: '6px', paddingBottom: '6px',
                       paddingLeft: `${((cell.indentLevel || 0) * 16) + 12}px`, paddingRight: '12px', overflowWrap: 'break-word',
-                      ...cellBrd(1 + rIdx, cIdx, cell),
+                      ...cellBrd(rIdx, cIdx, cell),
                     }}>
                       {formatCellContent(cell)}
                     </td>
@@ -3459,14 +3448,14 @@ function TableBlockView({
   // Border helpers — same logic as BlockContent and print renderer
   const tvwBrd = block.borders
   const tvwCols = block.headers.length
-  const tvwTotalRows = 1 + block.rows.length
-  const tvwGlobalBrd = (absRow: number, ci: number): React.CSSProperties => {
-    if (tvwBrd) return computeTableCellBorders(tvwBrd, absRow === 0, absRow === tvwTotalRows - 1, ci === 0, ci === tvwCols - 1)
-    const b = block.bordered ? (absRow === 0 ? `1px solid ${headerBg}30` : '1px solid #E5E7EB') : 'none'
+  const tvwTotalRows = block.rows.length
+  const tvwGlobalBrd = (rIdx: number, ci: number): React.CSSProperties => {
+    if (tvwBrd) return computeTableCellBorders(tvwBrd, rIdx === 0, rIdx === tvwTotalRows - 1, ci === 0, ci === tvwCols - 1)
+    const b = block.bordered ? '1px solid #E5E7EB' : 'none'
     return { borderTop: b, borderBottom: b, borderLeft: b, borderRight: b }
   }
-  const tvwCellBrd = (absRow: number, ci: number, cell?: TableCell): React.CSSProperties => {
-    const g = tvwGlobalBrd(absRow, ci)
+  const tvwCellBrd = (rIdx: number, ci: number, cell?: TableCell): React.CSSProperties => {
+    const g = tvwGlobalBrd(rIdx, ci)
     const sb = cell?.sideBorders
     if (!sb) return g
     return {
@@ -3541,12 +3530,12 @@ function TableBlockView({
                 ))}
               </tr>
             )}
-            {/* Column number row — only in edit mode */}
+            {/* Column number indicator row — edit mode only, never shown in report or export */}
             {isSelected && (
               <tr>
                 {/* Blank above row-delete column */}
                 {onUpdate && block.rows.length > 1 && <td style={{ background: 'transparent', border: 'none', padding: 0 }} />}
-                {/* Corner: select all */}
+                {/* Select-all corner */}
                 <td
                   onClick={handleSelectAll}
                   title="Select all cells"
@@ -3565,9 +3554,23 @@ function TableBlockView({
                         fontSize: 10, color: colFullySel ? '#1D4ED8' : '#64748B',
                         fontWeight: colFullySel ? 700 : 400,
                         padding: '2px 4px', userSelect: 'none',
+                        position: 'relative',
                       }}
                     >
                       {ci + 1}
+                      {/* Column resize handle */}
+                      {onUpdate && (
+                        <div
+                          title="Drag to resize column"
+                          style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 5, cursor: 'col-resize', zIndex: 10 }}
+                          onMouseDown={(e) => {
+                            e.preventDefault(); e.stopPropagation()
+                            const allWidths = block.colWidths?.slice() ?? block.headers.map(() => DEFAULT_COL_WIDTH)
+                            resizingColRef.current = { col: ci, startX: e.clientX, startWidth: allWidths[ci], allWidths }
+                            setResizingCol(ci)
+                          }}
+                        />
+                      )}
                     </td>
                   )
                 })}
@@ -3582,83 +3585,6 @@ function TableBlockView({
                 )}
               </tr>
             )}
-            {/* Column header row */}
-            <tr>
-              {/* Placeholder for row-delete column */}
-              {isSelected && onUpdate && block.rows.length > 1 && (
-                <td style={{ width: 14, minWidth: 14, background: '#F1F5F9', border: block.bordered ? `1px solid ${headerBg}30` : '1px solid #E2E8F0' }} />
-              )}
-              {/* Row number placeholder in header row */}
-              {isSelected && (
-                <td style={{ width: 28, minWidth: 28, background: '#F1F5F9', border: block.bordered ? `1px solid ${headerBg}30` : '1px solid #E2E8F0' }} />
-              )}
-              {block.headers.map((h, i) => (
-                <th
-                  key={i}
-                  className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide"
-                  style={{
-                    background: resizingCol === i ? '#BFDBFE' : headerBg,
-                    color: headerText,
-                    overflowWrap: 'break-word',
-                    cursor: 'text',
-                    position: 'relative',
-                    ...tvwCellBrd(0, i),
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (!isSelected) {
-                      onSelect?.()
-                      setPendingHeaderFocus(i)
-                    } else {
-                      headerInputRefs.current[i]?.focus()
-                    }
-                  }}
-                >
-                  {isSelected && onUpdate ? (
-                    <input
-                      ref={(el) => { headerInputRefs.current[i] = el }}
-                      defaultValue={h}
-                      onFocus={() => setFocusedHeaderIdx(i)}
-                      onBlur={() => setFocusedHeaderIdx(null)}
-                      onChange={(e) => { const headers = [...block.headers]; headers[i] = e.target.value; onUpdate({ headers }) }}
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') {
-                          e.preventDefault()
-                          const next = e.shiftKey ? i - 1 : i + 1
-                          if (next >= 0 && next < block.headers.length) {
-                            headerInputRefs.current[next]?.focus()
-                            headerInputRefs.current[next]?.select()
-                          } else if (next >= block.headers.length) {
-                            startEditing(0, 0)
-                          }
-                        } else if (e.key === 'Escape') {
-                          headerInputRefs.current[i]?.blur()
-                        }
-                      }}
-                      className="w-full bg-transparent text-xs font-semibold uppercase tracking-wide outline-none"
-                      style={{ color: headerText, minWidth: '40px' }}
-                      placeholder={`Col ${i + 1}`}
-                    />
-                  ) : (
-                    <span style={{ minWidth: 40, display: 'inline-block' }}>{h || `Col ${i + 1}`}</span>
-                  )}
-                  {/* Column resize handle */}
-                  {isSelected && onUpdate && (
-                    <div
-                      title="Drag to resize column"
-                      style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 5, cursor: 'col-resize', zIndex: 10 }}
-                      onMouseDown={(e) => {
-                        e.preventDefault(); e.stopPropagation()
-                        const allWidths = block.colWidths?.slice() ?? block.headers.map(() => DEFAULT_COL_WIDTH)
-                        resizingColRef.current = { col: i, startX: e.clientX, startWidth: allWidths[i], allWidths }
-                        setResizingCol(i)
-                      }}
-                    />
-                  )}
-                </th>
-              ))}
-            </tr>
           </thead>
           <tbody>
             {block.rows.map((row, rIdx) => {
@@ -3739,7 +3665,7 @@ function TableBlockView({
                         textDecoration: cell.underline ? 'underline' : 'none',
                         color: cell.color || dp.textColor,
                         background: isEditing ? '#EFF6FF' : (isCellSel ? '#DBEAFE' : (cell.bgColor || 'transparent')),
-                        ...tvwCellBrd(1 + rIdx, cIdx, cell),
+                        ...tvwCellBrd(rIdx, cIdx, cell),
                         outline: isEditing ? '2px solid #3B82F6' : (isCellSel && isSelected ? '1px solid #93C5FD' : 'none'),
                         outlineOffset: '-1px',
                         cursor: 'cell',
@@ -3795,7 +3721,7 @@ function TableBlockView({
       {/* Keyboard hint */}
       {isSelected && !editingCell && (
         <p className="mt-1 text-center text-[9px] text-gray-400">
-          Click cell to edit · Row/col numbers to select row/col · ✕ strip to delete · ▣ to select all · Shift/Ctrl+click to extend · Tab/Enter to navigate · Drag header edge to resize
+          Click cell to edit · Row/col numbers to select row/col · ✕ strip to delete · ▣ to select all · Shift/Ctrl+click to extend · Tab/Enter to navigate · Drag column number edge to resize
         </p>
       )}
       {!isSelected && (
@@ -4758,7 +4684,7 @@ function TableEditor({ block, dp, onUpdate }: { block: TableBlock; dp: DesignPac
     <div className="flex flex-col gap-3">
       {/* Canvas edit hint */}
       <div className="rounded-lg border border-[#C9A84C]/30 bg-[#C9A84C]/5 px-3 py-2 text-[10px] leading-relaxed text-[#C9A84C]">
-        Click cells to edit · Hover row/col numbers to delete (✕) · Click <strong>+</strong> at the end of any row/col to add · Drag header edge to resize
+        Click cells to edit · Hover row/col numbers to delete (✕) · Click <strong>+</strong> at the end of any row/col to add · Drag column number edge to resize
       </div>
 
       <div>
@@ -6096,18 +6022,16 @@ function renderPrintBlock(block: ReportBlock, dp: DesignPack, report?: ReportDat
         </div>
       )
     case 'table': {
-      const hBg = block.headerBg || dp.tableHeaderBg
-      const hTxt = block.headerText || dp.tableHeaderText
       const brd = block.borders
       const numCols = block.headers.length
-      const totalRows = 1 + block.rows.length
-      const globalPrintBrd = (absRow: number, ci: number): React.CSSProperties => {
-        if (brd) return computeTableCellBorders(brd, absRow === 0, absRow === totalRows - 1, ci === 0, ci === numCols - 1)
+      const totalRows = block.rows.length
+      const globalPrintBrd = (rIdx: number, ci: number): React.CSSProperties => {
+        if (brd) return computeTableCellBorders(brd, rIdx === 0, rIdx === totalRows - 1, ci === 0, ci === numCols - 1)
         const b = block.bordered ? '1px solid #ccc' : 'none'
         return { borderTop: b, borderBottom: b, borderLeft: b, borderRight: b }
       }
-      const printCellBrd = (absRow: number, ci: number, cell?: TableCell): React.CSSProperties => {
-        const g = globalPrintBrd(absRow, ci)
+      const printCellBrd = (rIdx: number, ci: number, cell?: TableCell): React.CSSProperties => {
+        const g = globalPrintBrd(rIdx, ci)
         const sb = cell?.sideBorders
         if (!sb) return g
         return {
@@ -6127,13 +6051,6 @@ function renderPrintBlock(block: ReportBlock, dp: DesignPack, report?: ReportDat
                 {block.colWidths.map((w, ci) => <col key={ci} style={{ width: w }} />)}
               </colgroup>
             )}
-            <thead>
-              <tr>
-                {block.headers.map((h, ci) => (
-                  <th key={ci} style={{ padding: '4pt 6pt', textAlign: 'left', background: hBg, color: hTxt, fontSize: '8pt', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', overflowWrap: 'break-word', ...printCellBrd(0, ci) }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
             <tbody>
               {block.rows.map((row, rIdx) => (
                 <tr key={rIdx} style={{ background: block.striped && rIdx % 2 === 1 ? '#F8FAFC' : 'white', breakInside: 'avoid', pageBreakInside: 'avoid', height: block.rowHeights?.[rIdx] }}>
@@ -6156,7 +6073,7 @@ function renderPrintBlock(block: ReportBlock, dp: DesignPack, report?: ReportDat
                           paddingLeft: `${((cell.indentLevel || 0) * 12) + 6}pt`,
                           paddingRight: '6pt',
                           overflowWrap: 'break-word',
-                          ...printCellBrd(1 + rIdx, cIdx, cell),
+                          ...printCellBrd(rIdx, cIdx, cell),
                         }}>{formatCellContent(cell)}</td>
                     )
                   })}
