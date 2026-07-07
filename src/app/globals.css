@@ -153,6 +153,13 @@ input[type='range']:focus {
   outline: none;
 }
 
+/* Re-enable text selection inside inputs/textareas within report blocks */
+[data-block] input,
+[data-block] textarea,
+[data-block] [contenteditable] {
+  user-select: text;
+}
+
 @media print {
   html, body {
     background: white;

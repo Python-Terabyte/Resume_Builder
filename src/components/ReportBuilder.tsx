@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useReactToPrint } from 'react-to-print'
 import Image from 'next/image'
@@ -32,6 +32,7 @@ import {
   type ShapeItem, type ShapeType, type ShapeTemplate,
   type ReportBranding,
   type CellBorder, type TableBorders,
+  type BlockLayout,
 } from '@/types/report'
 
 const CHART_PALETTE = ['#2D7DD2','#0D9080','#DC2626','#C9A84C','#a855f7','#f97316','#10b981','#f43f5e']
@@ -151,6 +152,38 @@ function createShape(type: ShapeType): ShapeItem {
     opacity: 1, rotation: 0, borderRadius: 0, zIndex: 1,
     ...defaults[type],
   }
+}
+
+// ── Free-form layout constants ───────────────────────────────────────────────
+
+const BLOCK_DEFAULT_HEIGHTS: Record<string, number> = {
+  heading: 52, text: 96, table: 220, chart: 300, kpi: 130,
+  image: 220, divider: 28, spacer: 48, toc: 140, callout: 76,
+  quote: 80, status: 110, progress: 110, columns: 200,
+}
+
+// Default content width at 760px canvas (A4: 760 - 2×72px padding)
+const CANVAS_CONTENT_W = 616
+
+function computeEffectiveLayouts(
+  blocks: ReportBlock[],
+  stored: Record<string, BlockLayout> | undefined,
+  contentW: number,
+): Record<string, BlockLayout> {
+  const result: Record<string, BlockLayout> = {}
+  let yAccum = 0
+  for (const block of blocks) {
+    if (stored?.[block.id]) {
+      result[block.id] = stored[block.id]
+      const l = stored[block.id]
+      yAccum = Math.max(yAccum, l.y + (l.h > 0 ? l.h : BLOCK_DEFAULT_HEIGHTS[block.type] ?? 100) + 12)
+    } else {
+      const h = BLOCK_DEFAULT_HEIGHTS[block.type] ?? 100
+      result[block.id] = { x: 0, y: yAccum, w: contentW, h }
+      yAccum += h + 12
+    }
+  }
+  return result
 }
 
 function getShapeElement(shape: ShapeItem): React.ReactNode {
@@ -444,12 +477,22 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
   // Block operations
   function addBlock(pageId: string, type: ReportBlockType) {
     const block = createBlock(type, dp)
-    updateReport((prev) => ({
-      ...prev,
-      pages: prev.pages.map((p) =>
-        p.id !== pageId ? p : { ...p, blocks: [...p.blocks, block] }
-      ),
-    }))
+    updateReport((prev) => {
+      const page = prev.pages.find((p) => p.id === pageId)
+      const layouts = page?.blockLayouts || {}
+      const bottoms = Object.values(layouts).map((l) => l.y + (l.h > 0 ? l.h : BLOCK_DEFAULT_HEIGHTS[type] ?? 100) + 12)
+      const nextY = bottoms.length > 0 ? Math.max(...bottoms) : 0
+      // h: 0 means auto-height — block sizes itself to its content
+      const newLayout: BlockLayout = { x: 0, y: Math.round(nextY), w: CANVAS_CONTENT_W, h: 0 }
+      return {
+        ...prev,
+        pages: prev.pages.map((p) => p.id !== pageId ? p : {
+          ...p,
+          blocks: [...p.blocks, block],
+          blockLayouts: { ...layouts, [block.id]: newLayout },
+        }),
+      }
+    })
     setSelectedBlockId(block.id)
     setSelectedPageId(pageId)
   }
@@ -467,13 +510,49 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
     }))
   }
 
+  function updateBlockLayout(pageId: string, blockId: string, layout: BlockLayout) {
+    updateReport((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) => p.id !== pageId ? p : {
+        ...p,
+        blockLayouts: { ...(p.blockLayouts || {}), [blockId]: layout },
+      }),
+    }))
+  }
+
+  function moveBlockToPage(fromPageId: string, toPageId: string, blockId: string, newLayout: BlockLayout) {
+    updateReport((prev) => {
+      const fromPage = prev.pages.find((p) => p.id === fromPageId)
+      const block = fromPage?.blocks.find((b) => b.id === blockId)
+      if (!fromPage || !block) return prev
+      return {
+        ...prev,
+        pages: prev.pages.map((p) => {
+          if (p.id === fromPageId) {
+            const layouts = { ...(p.blockLayouts || {}) }
+            delete layouts[blockId]
+            return { ...p, blocks: p.blocks.filter((b) => b.id !== blockId), blockLayouts: layouts }
+          }
+          if (p.id === toPageId) {
+            return { ...p, blocks: [...p.blocks, block], blockLayouts: { ...(p.blockLayouts || {}), [blockId]: newLayout } }
+          }
+          return p
+        }),
+      }
+    })
+    setSelectedPageId(toPageId)
+  }
+
   function deleteBlock(pageId: string, blockId: string) {
     if (pageId === '__cover__') { deleteCoverBlock(blockId); return }
     updateReport((prev) => ({
       ...prev,
-      pages: prev.pages.map((p) =>
-        p.id !== pageId ? p : { ...p, blocks: p.blocks.filter((b) => b.id !== blockId) }
-      ),
+      pages: prev.pages.map((p) => {
+        if (p.id !== pageId) return p
+        const newLayouts = { ...(p.blockLayouts || {}) }
+        delete newLayouts[blockId]
+        return { ...p, blocks: p.blocks.filter((b) => b.id !== blockId), blockLayouts: newLayouts }
+      }),
     }))
     if (selectedBlockId === blockId) setSelectedBlockId(null)
   }
@@ -1215,6 +1294,8 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
                   onReorderShape={(shapeId, dir) => reorderShape(page.id, shapeId, dir)}
                   onFormatAPIChange={handleTableFormatAPIChange}
                   onUpdateHF={(field, val) => updateReport((prev) => ({ ...prev, headerFooter: { ...prev.headerFooter, [field]: val } }))}
+                  onUpdateLayout={(blockId, layout) => updateBlockLayout(page.id, blockId, layout)}
+                  onMoveBlockToPage={(toPageId, blockId, layout) => moveBlockToPage(page.id, toPageId, blockId, layout)}
                 />
                 {/* Page break between pages */}
                 {pageIdx < report.pages.length - 1 && (
@@ -1279,12 +1360,19 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
           currentPageId={selectedPageId ?? report.pages[report.pages.length - 1]?.id ?? ''}
           dp={dp}
           onImport={(pageId, block) => {
-            updateReport((prev) => ({
-              ...prev,
-              pages: prev.pages.map((p) =>
-                p.id !== pageId ? p : { ...p, blocks: [...p.blocks, block] }
-              ),
-            }))
+            updateReport((prev) => {
+              const page = prev.pages.find((p) => p.id === pageId)
+              const layouts = page?.blockLayouts || {}
+              const bottoms = Object.values(layouts).map((l) => l.y + (l.h > 0 ? l.h : BLOCK_DEFAULT_HEIGHTS[block.type] ?? 100) + 12)
+              const nextY = bottoms.length > 0 ? Math.max(...bottoms) : 0
+              const newLayout: BlockLayout = { x: 0, y: Math.round(nextY), w: CANVAS_CONTENT_W, h: 0 }
+              return {
+                ...prev,
+                pages: prev.pages.map((p) =>
+                  p.id !== pageId ? p : { ...p, blocks: [...p.blocks, block], blockLayouts: { ...layouts, [block.id]: newLayout } }
+                ),
+              }
+            })
             setSelectedBlockId(block.id)
             setSelectedPageId(pageId)
             setShowImport(false)
@@ -1915,10 +2003,10 @@ function CoverPageView({
         )}
       </div>
 
-      {/* Watermark on cover */}
+      {/* Watermark on cover — z-index 50 so it renders above all blocks */}
       {watermark.enabled && !watermark.excludeCover && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center select-none"
-          style={{ opacity: watermark.opacity, transform: `rotate(${watermark.rotation}deg)` }}>
+          style={{ opacity: watermark.opacity, transform: `rotate(${watermark.rotation}deg)`, zIndex: 50 }}>
           {watermark.imageUrl
             ? <img src={watermark.imageUrl} alt="watermark" style={{ maxWidth: '60%', maxHeight: '60%', objectFit: 'contain' }} />
             : <span className="text-5xl font-black tracking-widest" style={{ color: watermark.color || '#ffffff' }}>{watermark.text}</span>
@@ -1941,7 +2029,8 @@ function CoverPageView({
 function ReportPageView({
   page, pageNum, dp, report, isSelectedPage, selectedBlockId, selectedShapeId,
   onSelectPage, onSelectBlock, onSelectShape, onDeleteBlock, onMoveBlock, onAddBlock, onUpdateBlock,
-  onUpdateShape, onDeleteShape, onReorderShape, onFormatAPIChange, onUpdateHF,
+  onUpdateShape, onDeleteShape, onReorderShape, onFormatAPIChange, onUpdateHF, onUpdateLayout,
+  onMoveBlockToPage,
 }: {
   page: ReportPage
   pageNum: number
@@ -1962,6 +2051,8 @@ function ReportPageView({
   onReorderShape: (id: string, dir: 'up' | 'down') => void
   onFormatAPIChange?: (api: TableFormatAPI | null) => void
   onUpdateHF: OnUpdateHF
+  onUpdateLayout: (blockId: string, layout: BlockLayout) => void
+  onMoveBlockToPage: (toPageId: string, blockId: string, layout: BlockLayout) => void
 }) {
   const [showInsert, setShowInsert] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1977,6 +2068,14 @@ function ReportPageView({
   const contentPadPx   = Math.round(20 * scale)          // 20 mm margin → px
   // Gap between header band and content on first page matches the print 8 mm
   const headerGapPx    = Math.round(8 * scale)
+  const contentW = CANVAS_W_PX - 2 * contentPadPx
+
+  // Compute an effective layout for every block (stored layout or auto-stacked default)
+  const effectiveLayouts = useMemo(
+    () => computeEffectiveLayouts(page.blocks, page.blockLayouts, contentW),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [page.blocks, page.blockLayouts, contentW],
+  )
 
   const BLOCK_TYPES: { type: ReportBlockType; label: string }[] = [
     { type: 'heading',  label: 'Heading' },
@@ -2035,30 +2134,22 @@ function ReportPageView({
       {/* Page header band */}
       {report.headerFooter.showHeader && <CanvasHeaderBand hf={report.headerFooter} dp={dp} onUpdate={onUpdateHF} />}
 
-      {/* Page content — flex:1 pushes footer to the bottom of the page */}
+      {/* Page content — outer div provides visual margins via padding; inner canvas is the abs-position reference */}
       <div style={{
         flex: '1',
+        overflow: 'visible',
         padding: `${contentPadPx}px`,
         paddingTop: report.headerFooter.showHeader ? `${headerGapPx}px` : `${contentPadPx}px`,
         paddingBottom: report.headerFooter.showFooter ? `${headerGapPx}px` : `${contentPadPx}px`,
       }}>
-        {/* Page title chip */}
-        <div className="mb-6 flex items-center justify-between">
-          <span className="text-xs font-medium uppercase tracking-widest" style={{ color: dp.accentColor }}>
-            Page {pageNum} — {page.title}
-          </span>
-        </div>
-
+        {/* Empty page state */}
         {page.blocks.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center" onClick={(e) => e.stopPropagation()}>
             {showInsert ? (
               <div className="flex flex-wrap justify-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 p-2">
                 {BLOCK_TYPES.map(({ type, label }) => (
-                  <button
-                    key={type}
-                    onClick={() => { onAddBlock(type); setShowInsert(false) }}
-                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
-                  >
+                  <button key={type} onClick={() => { onAddBlock(type); setShowInsert(false) }}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-gray-400 hover:text-gray-900">
                     {label}
                   </button>
                 ))}
@@ -2067,10 +2158,8 @@ function ReportPageView({
             ) : (
               <>
                 <p className="text-sm text-gray-400">This page is empty.</p>
-                <button
-                  onClick={() => setShowInsert(true)}
-                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-4 py-2 text-sm text-gray-400 transition hover:border-gray-400 hover:text-gray-600"
-                >
+                <button onClick={() => setShowInsert(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-4 py-2 text-sm text-gray-400 transition hover:border-gray-400 hover:text-gray-600">
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                   Add a block
                 </button>
@@ -2079,44 +2168,63 @@ function ReportPageView({
           </div>
         )}
 
-        {page.blocks.map((block, idx) => (
-          <BlockWrapper
-            key={block.id}
-            block={block}
-            dp={dp}
-            report={report}
-            isSelected={selectedBlockId === block.id}
-            isFirst={idx === 0}
-            isLast={idx === page.blocks.length - 1}
-            onSelect={() => onSelectBlock(block.id)}
-            onDelete={() => onDeleteBlock(block.id)}
-            onMoveUp={() => onMoveBlock(block.id, 'up')}
-            onMoveDown={() => onMoveBlock(block.id, 'down')}
-            onQuickUpdate={(updates) => onUpdateBlock(block.id, updates)}
-            onFormatAPIChange={onFormatAPIChange}
-          />
-        ))}
+        {/* Block canvas — position:relative so absolute children use content-area coordinates */}
+        {page.blocks.length > 0 && (() => {
+          const topPad = report.headerFooter.showHeader ? headerGapPx : contentPadPx
+          const botPad = report.headerFooter.showFooter ? headerGapPx : contentPadPx
+          const baseH = canvasHeightPx - topPad - botPad
+          // Grow canvas beyond one page-height if blocks extend further
+          const maxBlockBottom = page.blocks.reduce((max, b) => {
+            const l = page.blockLayouts?.[b.id]
+            if (!l) return max
+            return Math.max(max, l.y + (l.h > 0 ? l.h : BLOCK_DEFAULT_HEIGHTS[b.type] ?? 100) + 20)
+          }, 0)
+          return (
+          <div data-block-canvas data-page-id={page.id} style={{ position: 'relative', overflow: 'visible', minHeight: Math.max(baseH, maxBlockBottom) }}>
+            {page.blocks.map((block, idx) => (
+              <BlockWrapper
+                key={block.id}
+                block={block}
+                dp={dp}
+                report={report}
+                isSelected={selectedBlockId === block.id}
+                isFirst={idx === 0}
+                isLast={idx === page.blocks.length - 1}
+                layout={effectiveLayouts[block.id]}
+                onSelect={() => onSelectBlock(block.id)}
+                onDelete={() => onDeleteBlock(block.id)}
+                onMoveUp={() => onMoveBlock(block.id, 'up')}
+                onMoveDown={() => onMoveBlock(block.id, 'down')}
+                onQuickUpdate={(updates) => onUpdateBlock(block.id, updates)}
+                onFormatAPIChange={onFormatAPIChange}
+                onUpdateLayout={(l) => onUpdateLayout(block.id, l)}
+                onMoveToPage={(toPageId, layout) => onMoveBlockToPage(toPageId, block.id, layout)}
+              />
+            ))}
+          </div>
+          )
+        })()}
 
+        {/* Add block button */}
         {page.blocks.length > 0 && (
-          <div className="relative mt-4" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="no-print"
+            style={{ marginTop: 8, zIndex: 5 }}
+            onClick={(e) => e.stopPropagation()}
+          >
             {showInsert ? (
               <div className="flex flex-wrap gap-1.5 rounded-lg border border-gray-200 bg-gray-50 p-2">
                 {BLOCK_TYPES.map(({ type, label }) => (
-                  <button
-                    key={type}
-                    onClick={() => { onAddBlock(type); setShowInsert(false) }}
-                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
-                  >
+                  <button key={type} onClick={() => { onAddBlock(type); setShowInsert(false) }}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-gray-400 hover:text-gray-900">
                     {label}
                   </button>
                 ))}
                 <button onClick={() => setShowInsert(false)} className="ml-auto rounded-md px-2 py-1 text-xs text-gray-400 hover:text-gray-600">✕</button>
               </div>
             ) : (
-              <button
-                onClick={() => setShowInsert(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-gray-200 py-2 text-xs text-gray-400 transition hover:border-gray-400 hover:text-gray-600"
-              >
+              <button onClick={() => setShowInsert(true)}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-gray-200 bg-white/80 py-1.5 text-xs text-gray-400 transition hover:border-gray-400 hover:text-gray-600">
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                 Add block
               </button>
@@ -2144,11 +2252,11 @@ function ReportPageView({
         </div>
       )}
 
-      {/* Watermark */}
+      {/* Watermark — z-index 50 so it renders above all blocks */}
       {report.watermark.enabled && !page.noWatermark && (report.watermark.text || report.watermark.imageUrl) && (
         <div
           className="pointer-events-none absolute inset-0 flex items-center justify-center select-none"
-          style={{ opacity: report.watermark.opacity, transform: `rotate(${report.watermark.rotation}deg)` }}
+          style={{ opacity: report.watermark.opacity, transform: `rotate(${report.watermark.rotation}deg)`, zIndex: 50 }}
         >
           {report.watermark.imageUrl
             ? <img src={report.watermark.imageUrl} alt="watermark" style={{ maxWidth: '60%', maxHeight: '60%', objectFit: 'contain' }} />
@@ -2211,14 +2319,27 @@ function InlineArea({ value, onChange, placeholder, className, style, isSelected
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusedRef = useRef(false)
-  const [rows, setRows] = useState(Math.max(2, (value || '').split('\n').length + 1))
-  // Sync DOM from outside (e.g. undo) when the textarea isn't focused
+
+  const fitHeight = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  }, [])
+
+  // Sync DOM from outside (e.g. undo) and re-fit height
   useEffect(() => {
     if (!focusedRef.current && ref.current && ref.current.value !== value) {
       ref.current.value = value
-      setRows(Math.max(2, (value || '').split('\n').length + 1))
+      fitHeight()
     }
-  }, [value])
+  }, [value, fitHeight])
+
+  // Re-fit whenever selection state or value changes (runs after DOM paint)
+  useEffect(() => {
+    if (isSelected) fitHeight()
+  }, [isSelected, value, fitHeight])
+
   if (!isSelected) {
     return (
       <div className={`whitespace-pre-wrap ${className || ''}`} style={style}>
@@ -2230,20 +2351,20 @@ function InlineArea({ value, onChange, placeholder, className, style, isSelected
     <textarea
       ref={ref}
       defaultValue={value}
-      onChange={(e) => { onChange(e.target.value); setRows(Math.max(2, e.target.value.split('\n').length + 1)) }}
+      onChange={(e) => { onChange(e.target.value); fitHeight() }}
       placeholder={placeholder}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => e.stopPropagation()}
-      onFocus={() => { focusedRef.current = true }}
+      onFocus={() => { focusedRef.current = true; fitHeight() }}
       onBlur={() => { focusedRef.current = false }}
-      rows={rows}
       className={className}
       style={{
         fontSize: 'inherit', fontFamily: 'inherit', fontWeight: 'inherit',
         fontStyle: 'inherit', color: 'inherit', textAlign: 'inherit', lineHeight: 'inherit',
-        display: 'block', width: '100%', background: 'rgba(59,130,246,0.03)',
-        border: '1.5px dashed rgba(59,130,246,0.4)', borderRadius: 4,
-        outline: 'none', padding: '4px 6px', resize: 'none', cursor: 'text', minHeight: '3em',
+        display: 'block', width: '100%', background: 'rgba(201,168,76,0.04)',
+        border: '1.5px dashed rgba(201,168,76,0.35)', borderRadius: 4,
+        outline: 'none', padding: '4px 6px', resize: 'none', cursor: 'text',
+        minHeight: '3em', overflow: 'hidden', height: 'auto',
         ...style,
       }}
     />
@@ -2252,9 +2373,12 @@ function InlineArea({ value, onChange, placeholder, className, style, isSelected
 
 // ── Block Wrapper ───────────────────────────────────────────────────────────
 
+const DRAG_THRESHOLD = 4  // px movement before a mousedown becomes a drag
+
 function BlockWrapper({
   block, dp, report, isSelected, isFirst, isLast, controlsInside,
-  onSelect, onDelete, onMoveUp, onMoveDown, onQuickUpdate, onFormatAPIChange,
+  layout, onSelect, onDelete, onMoveUp, onMoveDown, onQuickUpdate, onFormatAPIChange,
+  onUpdateLayout, onMoveToPage,
 }: {
   block: ReportBlock
   dp: DesignPack
@@ -2263,83 +2387,240 @@ function BlockWrapper({
   isFirst: boolean
   isLast: boolean
   controlsInside?: boolean
+  layout?: BlockLayout
   onSelect: () => void
   onDelete: () => void
   onMoveUp: () => void
   onMoveDown: () => void
   onQuickUpdate?: (updates: Record<string, unknown>) => void
   onFormatAPIChange?: (api: TableFormatAPI | null) => void
+  onUpdateLayout?: (layout: BlockLayout) => void
+  onMoveToPage?: (toPageId: string, layout: BlockLayout) => void
 }) {
   const blockBg = (block as { bgColor?: string }).bgColor
+  const layoutRef = useRef(layout)
+  useEffect(() => { layoutRef.current = layout }, [layout])
+
+  // ── Drag to move (threshold-based: same mousedown handles click vs drag) ──
+  const onBodyMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!layoutRef.current || !onUpdateLayout) return
+    const target = e.target as HTMLElement
+    if (target.closest('input,textarea,button,a,select,[contenteditable],[data-no-drag]')) return
+    e.preventDefault()
+    const startX = e.clientX, startY = e.clientY
+    const { x: ox, y: oy } = layoutRef.current
+    // Record source canvas at drag start for cross-page detection
+    const srcCanvas = (e.currentTarget as HTMLElement).closest('[data-block-canvas]') as HTMLElement | null
+    const srcPageId = srcCanvas?.getAttribute('data-page-id') ?? null
+    let dragging = false
+    let raf = 0
+    const onMove = (me: MouseEvent) => {
+      const dx = me.clientX - startX, dy = me.clientY - startY
+      if (!dragging && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+      if (!dragging) { dragging = true; onSelect() }
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        if (!layoutRef.current) return
+        onUpdateLayout({ ...layoutRef.current, x: Math.round(Math.max(0, ox + dx)), y: Math.round(Math.max(0, oy + dy)) })
+      })
+    }
+    const onUp = (me: MouseEvent) => {
+      cancelAnimationFrame(raf)
+      if (!dragging) { onSelect(); cleanup(); return }
+      // Cross-page drop: check if cursor is over a different page's canvas
+      if (onMoveToPage && srcCanvas && srcPageId) {
+        const canvases = document.querySelectorAll<HTMLElement>('[data-block-canvas][data-page-id]')
+        for (const canvas of canvases) {
+          const pid = canvas.getAttribute('data-page-id')
+          if (!pid || pid === srcPageId) continue
+          const rect = canvas.getBoundingClientRect()
+          if (me.clientX >= rect.left && me.clientX <= rect.right && me.clientY >= rect.top && me.clientY <= rect.bottom) {
+            // Translate block position into target page canvas coordinates
+            const srcRect = srcCanvas.getBoundingClientRect()
+            const dx = me.clientX - startX, dy = me.clientY - startY
+            const finalX = Math.round(Math.max(0, ox + dx + srcRect.left - rect.left))
+            const finalY = Math.round(Math.max(0, oy + dy + srcRect.top - rect.top))
+            onMoveToPage(pid, { ...layoutRef.current!, x: finalX, y: finalY })
+            cleanup(); return
+          }
+        }
+      }
+      cleanup()
+    }
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [onSelect, onUpdateLayout, onMoveToPage])
+
+  // ── Resize ─────────────────────────────────────────────────────────────────
+  const onResizeMouseDown = useCallback((handle: string, e: React.MouseEvent) => {
+    if (!layoutRef.current || !onUpdateLayout) return
+    e.preventDefault(); e.stopPropagation()
+    const startX = e.clientX, startY = e.clientY
+    const { x: ox, y: oy, w: ow } = layoutRef.current
+    // When h===0 (auto), read the actual rendered height from the DOM so resize starts correctly
+    const oh = layoutRef.current.h > 0 ? layoutRef.current.h : (rootRef.current?.offsetHeight ?? 100)
+    const MIN_W = 100, MIN_H = 40
+    let raf = 0
+    const onMove = (me: MouseEvent) => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        if (!layoutRef.current) return
+        const dx = me.clientX - startX, dy = me.clientY - startY
+        let nx = ox, ny = oy, nw = ow, nh = oh
+        if (handle.includes('e')) nw = Math.max(MIN_W, ow + dx)
+        if (handle.includes('w')) { const clamped = Math.max(MIN_W, ow - dx); nx = ox + ow - clamped; nw = clamped }
+        if (handle.includes('s')) nh = Math.max(MIN_H, oh + dy)
+        if (handle.includes('n')) { const clamped = Math.max(MIN_H, oh - dy); ny = oy + oh - clamped; nh = clamped }
+        onUpdateLayout({ x: Math.round(nx), y: Math.round(ny), w: Math.round(nw), h: Math.round(nh) })
+      })
+    }
+    const onUp = () => {
+      cancelAnimationFrame(raf)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [onUpdateLayout])
+
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const blockContent = block.type === 'table' && onQuickUpdate ? (
+    <TableBlockView block={block as TableBlock} dp={dp} isSelected={isSelected} onUpdate={onQuickUpdate} onSelect={onSelect} onFormatAPIChange={onFormatAPIChange} />
+  ) : (
+    <BlockContent block={block} dp={dp} report={report} isSelected={isSelected} onUpdate={onQuickUpdate} />
+  )
+
+  // ── Free-form (absolutely positioned) layout mode ─────────────────────────
+  if (layout) {
+    const handles: { id: string; style: React.CSSProperties }[] = [
+      { id: 'nw', style: { top: -5, left: -5, cursor: 'nw-resize' } },
+      { id: 'n',  style: { top: -5, left: '50%', transform: 'translateX(-50%)', cursor: 'n-resize' } },
+      { id: 'ne', style: { top: -5, right: -5, cursor: 'ne-resize' } },
+      { id: 'w',  style: { top: '50%', left: -5, transform: 'translateY(-50%)', cursor: 'w-resize' } },
+      { id: 'e',  style: { top: '50%', right: -5, transform: 'translateY(-50%)', cursor: 'e-resize' } },
+      { id: 'sw', style: { bottom: -5, left: -5, cursor: 'sw-resize' } },
+      { id: 's',  style: { bottom: -5, left: '50%', transform: 'translateX(-50%)', cursor: 's-resize' } },
+      { id: 'se', style: { bottom: -5, right: -5, cursor: 'se-resize' } },
+    ]
+    return (
+      <div
+        ref={rootRef}
+        data-block
+        style={{
+          position: 'absolute',
+          left: layout.x,
+          top: layout.y,
+          width: layout.w,
+          // height always auto so content is never clipped; layout.h only sets a minimum
+          minHeight: layout.h > 0 ? layout.h : 40,
+          height: 'auto',
+          zIndex: isSelected ? 10 : 1,
+          boxSizing: 'border-box',
+          userSelect: 'none',
+          ...(blockBg ? { backgroundColor: blockBg, borderRadius: 6 } : {}),
+          outline: isSelected ? '2px solid #C9A84C' : undefined,
+          outlineOffset: isSelected ? 1 : undefined,
+        }}
+        onMouseDown={onBodyMouseDown}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Block content — no overflow clipping so all content is always visible */}
+        <div style={{ width: '100%', borderRadius: 'inherit' }}>
+          {blockContent}
+        </div>
+
+        {/* Hover/selected: top toolbar */}
+        <div
+          className={`no-print absolute left-0 right-0 flex items-center justify-between px-1 ${isSelected ? 'opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity`}
+          style={{ top: -22, height: 22, background: '#C9A84C', borderRadius: '4px 4px 0 0', zIndex: 20, userSelect: 'none', pointerEvents: 'auto' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Drag grip */}
+          <div
+            title="Drag to move"
+            style={{ cursor: 'grab', display: 'flex', alignItems: 'center', gap: 3, color: '#1C0D03', fontSize: 10, paddingLeft: 2 }}
+            onMouseDown={(e) => { e.stopPropagation(); onBodyMouseDown(e) }}
+          >
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="currentColor">
+              {[2,6,10].flatMap(x => [2,6].map(y => <circle key={`${x}${y}`} cx={x} cy={y} r="1.2" />))}
+            </svg>
+            <span style={{ fontSize: 9, letterSpacing: '0.04em', fontWeight: 700 }}>MOVE</span>
+          </div>
+          {/* Z-order + delete */}
+          <div className="flex items-center gap-0.5">
+            <button title="Send backward (z-order)" onClick={(e) => { e.stopPropagation(); onMoveUp() }} disabled={isFirst}
+              style={{ background: 'rgba(0,0,0,0.12)', border: 'none', color: '#1C0D03', borderRadius: 3, width: 18, height: 16, fontSize: 10, cursor: isFirst ? 'default' : 'pointer', opacity: isFirst ? 0.3 : 1 }}>↓</button>
+            <button title="Bring forward (z-order)" onClick={(e) => { e.stopPropagation(); onMoveDown() }} disabled={isLast}
+              style={{ background: 'rgba(0,0,0,0.12)', border: 'none', color: '#1C0D03', borderRadius: 3, width: 18, height: 16, fontSize: 10, cursor: isLast ? 'default' : 'pointer', opacity: isLast ? 0.3 : 1 }}>↑</button>
+            <button title="Delete block" onClick={(e) => { e.stopPropagation(); onDelete() }}
+              style={{ background: '#EF4444', border: 'none', color: 'white', borderRadius: 3, width: 18, height: 16, fontSize: 10, cursor: 'pointer' }}>✕</button>
+          </div>
+        </div>
+
+        {/* Resize handles — only when selected */}
+        {isSelected && handles.map(({ id, style }) => (
+          <div
+            key={id}
+            className="no-print"
+            onMouseDown={(e) => onResizeMouseDown(id, e)}
+            style={{
+              position: 'absolute', width: 9, height: 9,
+              background: 'white', border: '2px solid #C9A84C', borderRadius: 2,
+              zIndex: 30, ...style,
+            }}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  // ── Flow layout mode (cover page blocks, columns blocks) ──────────────────
   return (
     <div
       data-block
       className={`group relative mb-3 rounded transition-all ${
         isSelected
-          ? 'outline outline-2 outline-blue-400 outline-offset-2'
+          ? 'outline outline-2 outline-[#C9A84C] outline-offset-2'
           : 'hover:outline hover:outline-1 hover:outline-gray-200 hover:outline-offset-2'
       }`}
       style={blockBg ? { backgroundColor: blockBg, borderRadius: 6, padding: '2px' } : undefined}
       onClick={(e) => { e.stopPropagation(); onSelect() }}
     >
-      {/* Block controls — left-outside for page blocks, top-right inside for cover blocks */}
+      {/* Controls */}
       {controlsInside ? (
-        <div
-          className={`absolute right-1 top-1 flex flex-row items-center gap-0.5 z-10 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button onClick={onMoveUp} disabled={isFirst}
-            className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-black/70 disabled:opacity-20 transition"
-            title="Move up">
+        <div className={`absolute right-1 top-1 flex flex-row items-center gap-0.5 z-10 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
+          onClick={(e) => e.stopPropagation()}>
+          <button onClick={onMoveUp} disabled={isFirst} className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-black/70 disabled:opacity-20 transition" title="Move up">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>
           </button>
-          <button onClick={onMoveDown} disabled={isLast}
-            className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-black/70 disabled:opacity-20 transition"
-            title="Move down">
+          <button onClick={onMoveDown} disabled={isLast} className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-black/70 disabled:opacity-20 transition" title="Move down">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
           </button>
-          <button onClick={onDelete}
-            className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-red-600 transition"
-            title="Delete block">
+          <button onClick={onDelete} className="flex h-5 w-5 items-center justify-center rounded bg-black/50 text-white/80 hover:bg-red-600 transition" title="Delete block">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
       ) : (
-        <div
-          className={`absolute -left-8 top-1 flex flex-col items-center gap-0.5 z-10 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button onClick={onMoveUp} disabled={isFirst}
-            className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-gray-700 disabled:opacity-30 transition"
-            title="Move up">
+        <div className={`absolute -left-8 top-1 flex flex-col items-center gap-0.5 z-10 ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
+          onClick={(e) => e.stopPropagation()}>
+          <button onClick={onMoveUp} disabled={isFirst} className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-gray-700 disabled:opacity-30 transition" title="Move up">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>
           </button>
-          <button onClick={onMoveDown} disabled={isLast}
-            className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-gray-700 disabled:opacity-30 transition"
-            title="Move down">
+          <button onClick={onMoveDown} disabled={isLast} className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-gray-700 disabled:opacity-30 transition" title="Move down">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
           </button>
-          <button onClick={onDelete}
-            className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-red-500 transition"
-            title="Delete block">
+          <button onClick={onDelete} className="flex h-6 w-6 items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-400 hover:text-red-500 transition" title="Delete block">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
       )}
-
-      {/* Block content — tables use inline interactive view; all others use BlockContent for inline editing */}
-      {block.type === 'table' && onQuickUpdate ? (
-        <TableBlockView
-          block={block as TableBlock}
-          dp={dp}
-          isSelected={isSelected}
-          onUpdate={onQuickUpdate}
-          onSelect={onSelect}
-          onFormatAPIChange={onFormatAPIChange}
-        />
-      ) : (
-        <BlockContent block={block} dp={dp} report={report} isSelected={isSelected} onUpdate={onQuickUpdate} />
-      )}
+      {blockContent}
     </div>
   )
 }
@@ -3470,18 +3751,104 @@ function TableBlockView({
   const DEFAULT_COL_WIDTH = 120
   const DEFAULT_ROW_HEIGHT = 32
 
-  // When selected (edit mode), compute exact pixel width from colWidths + utility column sizes
-  // so the fixed-size utility columns (delete-row: 14px, row-number: 28px, add-col: 16px)
-  // don't stretch proportionally with the table when data columns are resized.
+  // When selected (edit mode), compute exact pixel width from colWidths alone.
+  // Row numbers, delete-row and add-col controls are all rendered outside the table boundary.
   const editModeTableWidth = isSelected && block.colWidths
     ? block.colWidths.reduce((s: number, w: number) => s + (typeof w === 'number' ? w : DEFAULT_COL_WIDTH), 0)
-      + (onUpdate && block.rows.length > 1 ? 14 : 0)
-      + 28
-      + (onUpdate ? 16 : 0)
     : undefined
 
+  // Estimated heights of the two edit-mode header rows, used to align external controls.
+  const DELETE_STRIP_H = isSelected && onUpdate && block.headers.length > 1 ? 18 : 0
+  const COL_NUM_ROW_H = isSelected ? 26 : 0
+
   return (
-    <div onClick={(e) => e.stopPropagation()} style={{ cursor: resizingCol !== null ? 'col-resize' : resizingRow !== null ? 'row-resize' : undefined, userSelect: resizingCol !== null || resizingRow !== null ? 'none' : undefined }}>
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{ display: 'flex', alignItems: 'flex-start', cursor: resizingCol !== null ? 'col-resize' : resizingRow !== null ? 'row-resize' : undefined, userSelect: resizingCol !== null || resizingRow !== null ? 'none' : undefined }}
+    >
+      {/* Delete row buttons — outside left of table */}
+      {isSelected && onUpdate && block.rows.length > 1 && (
+        <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, marginRight: 3, paddingTop: DELETE_STRIP_H + COL_NUM_ROW_H }}>
+          {block.rows.map((_, rIdx) => {
+            const rowH = block.rowHeights?.[rIdx] ?? DEFAULT_ROW_HEIGHT
+            return (
+              <div key={rIdx} style={{ height: rowH, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onMouseEnter={() => setHoveredDelRow(rIdx)}
+                onMouseLeave={() => setHoveredDelRow(null)}
+              >
+                <button
+                  title={`Delete row ${rIdx + 1}`}
+                  onClick={(e) => { e.stopPropagation(); deleteRowAt(rIdx) }}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 12, height: 12,
+                    background: hoveredDelRow === rIdx ? '#FEE2E2' : '#FEF2F2',
+                    color: hoveredDelRow === rIdx ? '#EF4444' : '#FCA5A5',
+                    fontSize: 8, border: 'none', cursor: 'pointer', borderRadius: 2,
+                    transition: 'all 0.15s',
+                  }}
+                >✕</button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Row numbers panel — outside left of table, decoupled from table column layout */}
+      {isSelected && (
+        <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          {DELETE_STRIP_H > 0 && <div style={{ height: DELETE_STRIP_H }} />}
+          {/* Select-all corner */}
+          <div
+            onClick={handleSelectAll}
+            title="Select all cells"
+            style={{
+              height: COL_NUM_ROW_H, width: 28,
+              background: '#E2E8F0', border: '1px solid #CBD5E1',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 9, color: '#64748B', userSelect: 'none',
+            }}
+          >▣</div>
+          {/* Row number cells */}
+          {block.rows.map((_, rIdx) => {
+            const rowH = block.rowHeights?.[rIdx] ?? DEFAULT_ROW_HEIGHT
+            const rowFullySel = block.headers.every((_, ci) => selectedCells.has(cellKey(rIdx, ci)))
+            return (
+              <div
+                key={rIdx}
+                onClick={(e) => handleRowHeaderClick(rIdx, e)}
+                title="Click to select row"
+                style={{
+                  height: rowH, width: 28,
+                  background: rowFullySel ? '#BFDBFE' : (resizingRow === rIdx ? '#BFDBFE' : '#F1F5F9'),
+                  border: '1px solid #CBD5E1',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 10, color: rowFullySel ? '#1D4ED8' : '#64748B',
+                  fontWeight: rowFullySel ? 700 : 400,
+                  userSelect: 'none', position: 'relative',
+                }}
+              >
+                {rIdx + 1}
+                {onUpdate && (
+                  <div
+                    title="Drag to resize row"
+                    style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 4, cursor: 'row-resize', zIndex: 10 }}
+                    onMouseDown={(e) => {
+                      e.preventDefault(); e.stopPropagation()
+                      const allHeights = block.rowHeights?.slice() ?? block.rows.map(() => DEFAULT_ROW_HEIGHT)
+                      resizingRowRef.current = { row: rIdx, startY: e.clientY, startHeight: allHeights[rIdx], allHeights }
+                      setResizingRow(rIdx)
+                    }}
+                  />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Table + caption */}
+      <div style={{ flex: 1, minWidth: 0 }}>
       {/* Caption */}
       {block.caption && <p className="mb-1.5 text-xs text-gray-500 italic">{block.caption}</p>}
 
@@ -3494,20 +3861,13 @@ function TableBlockView({
           {/* Column widths */}
           {block.colWidths && (
             <colgroup>
-              {isSelected && onUpdate && block.rows.length > 1 && <col style={{ width: 14 }} />}
-              {isSelected && <col style={{ width: 28 }} />}
               {block.colWidths.map((w, ci) => <col key={ci} style={{ width: w }} />)}
-              {isSelected && onUpdate && <col style={{ width: 16 }} />}
             </colgroup>
           )}
           <thead>
             {/* Column delete strip — only in edit mode, outside the selection row */}
             {isSelected && onUpdate && block.headers.length > 1 && (
               <tr>
-                {/* Corner blank above row-delete col */}
-                {block.rows.length > 1 && <td style={{ background: 'transparent', border: 'none', padding: 0 }} />}
-                {/* Blank above corner (select-all) */}
-                <td style={{ background: 'transparent', border: 'none', padding: 0 }} />
                 {block.headers.map((_, ci) => (
                   <td key={ci}
                     style={{ background: 'transparent', border: 'none', padding: '0 0 1px 0', textAlign: 'center' }}
@@ -3533,14 +3893,6 @@ function TableBlockView({
             {/* Column number indicator row — edit mode only, never shown in report or export */}
             {isSelected && (
               <tr>
-                {/* Blank above row-delete column */}
-                {onUpdate && block.rows.length > 1 && <td style={{ background: 'transparent', border: 'none', padding: 0 }} />}
-                {/* Select-all corner */}
-                <td
-                  onClick={handleSelectAll}
-                  title="Select all cells"
-                  style={{ width: 28, minWidth: 28, background: '#E2E8F0', border: '1px solid #CBD5E1', cursor: 'pointer', textAlign: 'center', fontSize: 9, color: '#64748B', padding: '2px 0', userSelect: 'none' }}
-                >▣</td>
                 {block.headers.map((_, ci) => {
                   const colFullySel = block.rows.every((_, ri) => selectedCells.has(cellKey(ri, ci)))
                   return (
@@ -3574,15 +3926,6 @@ function TableBlockView({
                     </td>
                   )
                 })}
-                {/* Add column */}
-                {onUpdate && (
-                  <td
-                    onClick={() => addColAt(block.headers.length)}
-                    title="Add column"
-                    style={{ width: 16, background: '#F8FAFC', border: '1px dashed #CBD5E1', cursor: 'pointer', textAlign: 'center', fontSize: 11, color: '#94A3B8', padding: '2px 0', userSelect: 'none' }}
-                    className="hover:bg-blue-50 hover:text-blue-500 transition-colors"
-                  >+</td>
-                )}
               </tr>
             )}
           </thead>
@@ -3592,59 +3935,6 @@ function TableBlockView({
               const rowH = block.rowHeights?.[rIdx]
               return (
               <tr key={rIdx} style={{ background: block.striped && rIdx % 2 === 1 ? '#F8FAFC' : 'white', height: rowH }}>
-                {/* Row delete button — separate column outside the row number */}
-                {isSelected && onUpdate && block.rows.length > 1 && (
-                  <td
-                    style={{ width: 14, minWidth: 14, padding: '0 1px', background: 'transparent', border: 'none', textAlign: 'center', verticalAlign: 'middle' }}
-                    onMouseEnter={() => setHoveredDelRow(rIdx)}
-                    onMouseLeave={() => setHoveredDelRow(null)}
-                  >
-                    <button
-                      title={`Delete row ${rIdx + 1}`}
-                      onClick={(e) => { e.stopPropagation(); deleteRowAt(rIdx) }}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        width: 12, height: 12,
-                        background: hoveredDelRow === rIdx ? '#FEE2E2' : '#FEF2F2',
-                        color: hoveredDelRow === rIdx ? '#EF4444' : '#FCA5A5',
-                        fontSize: 8, border: 'none', cursor: 'pointer', borderRadius: 2,
-                        transition: 'all 0.15s', flexShrink: 0,
-                      }}
-                    >✕</button>
-                  </td>
-                )}
-                {/* Row number + row resize handle */}
-                {isSelected && (
-                  <td
-                    onClick={(e) => handleRowHeaderClick(rIdx, e)}
-                    title="Click to select row"
-                    style={{
-                      width: 28, minWidth: 28,
-                      background: rowFullySel ? '#BFDBFE' : (resizingRow === rIdx ? '#BFDBFE' : '#F1F5F9'),
-                      border: '1px solid #CBD5E1',
-                      cursor: 'pointer', textAlign: 'center',
-                      fontSize: 10, color: rowFullySel ? '#1D4ED8' : '#64748B',
-                      fontWeight: rowFullySel ? 700 : 400,
-                      padding: '4px 0', userSelect: 'none',
-                      position: 'relative',
-                    }}
-                  >
-                    {rIdx + 1}
-                    {/* Row resize handle */}
-                    {onUpdate && (
-                      <div
-                        title="Drag to resize row"
-                        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 4, cursor: 'row-resize', zIndex: 10 }}
-                        onMouseDown={(e) => {
-                          e.preventDefault(); e.stopPropagation()
-                          const allHeights = block.rowHeights?.slice() ?? block.rows.map(() => DEFAULT_ROW_HEIGHT)
-                          resizingRowRef.current = { row: rIdx, startY: e.clientY, startHeight: allHeights[rIdx], allHeights }
-                          setResizingRow(rIdx)
-                        }}
-                      />
-                    )}
-                  </td>
-                )}
                 {row.map((cell, cIdx) => {
                   const key = cellKey(rIdx, cIdx)
                   if (spanMap.has(key)) return null  // covered by a spanning cell
@@ -3703,8 +3993,6 @@ function TableBlockView({
             {/* Add row at bottom */}
             {isSelected && onUpdate && (
               <tr>
-                {block.rows.length > 1 && <td style={{ width: 14, background: '#F8FAFC', border: '1px dashed #CBD5E1' }} />}
-                <td style={{ width: 28, background: '#F8FAFC', border: '1px dashed #CBD5E1' }} />
                 <td
                   colSpan={block.headers.length}
                   onClick={() => addRowAt(block.rows.length)}
@@ -3721,13 +4009,35 @@ function TableBlockView({
       {/* Keyboard hint */}
       {isSelected && !editingCell && (
         <p className="mt-1 text-center text-[9px] text-gray-400">
-          Click cell to edit · Row/col numbers to select row/col · ✕ strip to delete · ▣ to select all · Shift/Ctrl+click to extend · Tab/Enter to navigate · Drag column number edge to resize
+          Click cell to edit · Row/col numbers to select row/col · ▣ to select all · Shift/Ctrl+click to extend · Tab/Enter to navigate · Drag column number edge to resize
         </p>
       )}
       {!isSelected && (
         <p className="mt-1 text-center text-[9px] text-gray-400 opacity-0 group-hover:opacity-100 transition">
           Click any cell to start editing
         </p>
+      )}
+      </div>{/* end table+caption wrapper */}
+
+      {/* Add column button — outside right of table */}
+      {isSelected && onUpdate && (
+        <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, marginLeft: 3, paddingTop: DELETE_STRIP_H }}>
+          <div style={{ height: COL_NUM_ROW_H, display: 'flex', alignItems: 'center' }}>
+            <button
+              onClick={() => addColAt(block.headers.length)}
+              title="Add column"
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 16, height: 16,
+                background: '#F8FAFC', border: '1px dashed #CBD5E1',
+                cursor: 'pointer', fontSize: 13, color: '#94A3B8', borderRadius: 3,
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#EFF6FF'; (e.currentTarget as HTMLElement).style.color = '#3B82F6' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#F8FAFC'; (e.currentTarget as HTMLElement).style.color = '#94A3B8' }}
+            >+</button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -5960,7 +6270,11 @@ function PrintView({ report, dp }: { report: ReportData; dp: DesignPack }) {
                     paddingBottom: showFooter ? '0' : '20mm',
                     verticalAlign: 'top',
                   }}>
-                    {page.blocks.map((block) => {
+                    {[...page.blocks].sort((a, b) => {
+                      const la = page.blockLayouts?.[a.id], lb = page.blockLayouts?.[b.id]
+                      if (la && lb) return la.y - lb.y
+                      return 0
+                    }).map((block) => {
                       const canBreak = block.type === 'table' && (block as TableBlock).allowBreak
                       return (
                         <div key={block.id} style={{

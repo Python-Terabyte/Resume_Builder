@@ -47,6 +47,13 @@ export interface ShapeTemplate {
   shapes: ShapeItem[]
 }
 
+export interface BlockLayout {
+  x: number   // px from left of page content area (at 760px canvas scale)
+  y: number   // px from top of page content area
+  w: number   // px width
+  h: number   // px height (0 = auto-size to content)
+}
+
 // ── Block Types ────────────────────────────────────────────────────────────
 
 export interface HeadingBlock {
@@ -299,6 +306,7 @@ export interface ReportPage {
   id: string
   title: string
   blocks: ReportBlock[]
+  blockLayouts?: Record<string, BlockLayout>
   shapes?: ShapeItem[]
   style?: PageStyle
   noWatermark?: boolean
