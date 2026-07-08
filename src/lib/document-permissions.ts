@@ -91,6 +91,65 @@ export async function createCollabRecord(
   await logActivity(docId, ownerUid, ownerEmail, 'created', {})
 }
 
+/**
+ * Accepts every pending invitation addressed to this email and links it to the
+ * now-known uid: adds the collaborator record and writes the users/{uid}/sharedWith
+ * reverse index so the document shows up in "Shared With Me" without further action.
+ * Called on sign-in/signup. Non-critical — errors are silently swallowed.
+ */
+export async function autoAcceptPendingInvitations(uid: string, email: string): Promise<void> {
+  try {
+    const snap = await adminDb()
+      .collectionGroup('invitations')
+      .where('email', '==', email.toLowerCase())
+      .where('status', '==', 'pending')
+      .get()
+
+    if (snap.empty) return
+
+    const now = new Date()
+    await Promise.all(snap.docs.map(async (invDoc) => {
+      try {
+        const invData = invDoc.data()
+        const expiresAt = invData.expiresAt?.toDate?.()
+        if (expiresAt && expiresAt < now) return
+
+        const parentRef = invDoc.ref.parent.parent
+        if (!parentRef) return
+        const docId = parentRef.id
+        const role = (invData.role ?? 'viewer') as CollaboratorRole
+
+        await Promise.all([
+          collabDoc(docId).collection('collaborators').doc(uid).set({
+            uid,
+            email,
+            displayName: '',
+            role,
+            addedAt: FieldValue.serverTimestamp(),
+            addedBy: invData.invitedBy ?? '',
+            addedByEmail: invData.invitedByEmail ?? '',
+          }),
+          adminDb().collection('users').doc(uid).collection('sharedWith').doc(docId).set({
+            role,
+            addedAt: FieldValue.serverTimestamp(),
+            addedBy: invData.invitedBy ?? '',
+            addedByEmail: invData.invitedByEmail ?? '',
+          }),
+          invDoc.ref.update({ status: 'accepted', acceptedAt: FieldValue.serverTimestamp() }),
+        ])
+
+        await logActivity(docId, uid, email, 'invitation_accepted', {
+          invitedBy: invData.invitedByEmail ?? '',
+        })
+      } catch {
+        // one bad invitation shouldn't block the others
+      }
+    }))
+  } catch {
+    // non-critical — sign-in must never fail because of this
+  }
+}
+
 /** Logs an activity event. Non-critical — errors are silently swallowed. */
 export async function logActivity(
   docId: string,

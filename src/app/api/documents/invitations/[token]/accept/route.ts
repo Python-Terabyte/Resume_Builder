@@ -48,16 +48,24 @@ export async function POST(
   const role = (invData.role ?? 'viewer') as CollaboratorRole
   const type = (invData.documentType ?? 'resume') as DocumentType
 
-  // Add as collaborator
-  await collabDoc(docId).collection('collaborators').doc(session.user.id).set({
-    uid: session.user.id,
-    email: session.user.email,
-    displayName: session.user.name ?? '',
-    role,
-    addedAt: FieldValue.serverTimestamp(),
-    addedBy: invData.invitedBy ?? '',
-    addedByEmail: invData.invitedByEmail ?? '',
-  })
+  // Add as collaborator, and write the reverse index so it shows up in "Shared With Me"
+  await Promise.all([
+    collabDoc(docId).collection('collaborators').doc(session.user.id).set({
+      uid: session.user.id,
+      email: session.user.email,
+      displayName: session.user.name ?? '',
+      role,
+      addedAt: FieldValue.serverTimestamp(),
+      addedBy: invData.invitedBy ?? '',
+      addedByEmail: invData.invitedByEmail ?? '',
+    }),
+    adminDb().collection('users').doc(session.user.id).collection('sharedWith').doc(docId).set({
+      role,
+      addedAt: FieldValue.serverTimestamp(),
+      addedBy: invData.invitedBy ?? '',
+      addedByEmail: invData.invitedByEmail ?? '',
+    }),
+  ])
 
   // Mark invitation as accepted
   await invDoc.ref.update({ status: 'accepted', acceptedAt: FieldValue.serverTimestamp() })

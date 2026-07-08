@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { useAuth } from '@/lib/AuthContext'
 import { signOut } from '@/lib/auth'
 import { createReport, deleteReport, getReport, getReportDoc, listReports, saveReport, type ReportDoc } from '@/lib/reports'
+import { listSharedDocuments, type SharedDocEntry } from '@/lib/collaboration'
 import CollabShareModal from './ShareModal'
 import VersionHistoryModal from './VersionHistoryModal'
 import { REPORT_TEMPLATES, TEMPLATE_CATEGORIES, type ReportTemplate } from '@/lib/report-templates'
@@ -240,6 +241,7 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
   const [isDirty, setIsDirty] = useState(false)
   const [pickerState, setPickerState] = useState<PickerState>('loading')
   const [pickerDocs, setPickerDocs] = useState<ReportDoc[]>([])
+  const [pickerSharedDocs, setPickerSharedDocs] = useState<SharedDocEntry[]>([])
   const [isPdfLoading, setIsPdfLoading] = useState(false)
   const [showDocs, setShowDocs] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
@@ -286,13 +288,13 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
 
   useEffect(() => {
     if (!initialDocId) return
-    getReport(initialDocId)
-      .then((reportData) => {
-        setReport(reportData)
+    getReportDoc(initialDocId)
+      .then((doc) => {
+        setReport(doc.report)
         setDocId(initialDocId)
-        setDocName('Report')
+        setDocName(doc.name || 'Untitled Report')
         setSelectedBlockId(null)
-        setSelectedPageId(reportData.pages[0]?.id ?? null)
+        setSelectedPageId(doc.report.pages[0]?.id ?? null)
         setSaveState('saved')
         setIsDirty(false)
         setPickerState('hide')
@@ -304,10 +306,15 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
 
   useEffect(() => {
     if (initialDocId) return // handled above
-    listReports()
-      .then((docs) => {
-        if (docs.length > 0) {
-          setPickerDocs(docs)
+    // Load independently so a shared-endpoint failure doesn't hide the user's own reports
+    Promise.all([
+      listReports().catch(() => [] as ReportDoc[]),
+      listSharedDocuments().then((all) => all.filter((d) => d.type === 'report')).catch(() => [] as SharedDocEntry[]),
+    ])
+      .then(([docs, shared]) => {
+        setPickerDocs(docs)
+        setPickerSharedDocs(shared)
+        if (docs.length > 0 || shared.length > 0) {
           setPickerState('show')
         } else {
           setPickerState('hide')
@@ -472,6 +479,23 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
       setSaveError(`Failed to open report: ${(err as Error).message}`)
       setPickerState('show')
     }
+  }
+
+  function openSharedReport(sharedDocId: string) {
+    setShowDocs(false)
+    clearHistory()
+    getReportDoc(sharedDocId).then((doc) => {
+      setReport(doc.report)
+      setDocId(sharedDocId)
+      setDocName(doc.name || 'Untitled Report')
+      setSelectedBlockId(null)
+      setSelectedPageId(doc.report.pages[0]?.id ?? null)
+      setSaveState('saved')
+      setIsDirty(false)
+      setPickerState('hide')
+      router.replace(`/report/${sharedDocId}`)
+      setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500)
+    }).catch((err) => setSaveError(`Failed to open shared report: ${(err as Error).message}`))
   }
 
   // Block operations
@@ -964,8 +988,10 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
     return (
       <ReportPicker
         docs={pickerDocs}
+        sharedDocs={pickerSharedDocs}
         userName={user?.name}
         onOpen={handleOpenDoc}
+        onOpenShared={openSharedReport}
         onNew={handleNew}
         onDelete={handleDelete}
       />
@@ -1391,19 +1417,7 @@ export default function ReportBuilder({ initialDocId }: { initialDocId?: string 
           onDelete={handleDelete}
           onClose={() => setShowDocs(false)}
           onRefresh={() => listReports().then(setPickerDocs).catch(() => {})}
-          onOpenShared={(sharedDocId) => {
-            setShowDocs(false)
-            getReportDoc(sharedDocId).then((doc) => {
-              setReport(doc.report)
-              setDocId(sharedDocId)
-              setDocName(doc.name || 'Untitled Report')
-              setSelectedPageId(doc.report.pages[0]?.id ?? null)
-              setSaveState('saved')
-              setIsDirty(false)
-              router.replace(`/report/${sharedDocId}`)
-              setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500)
-            }).catch((err) => console.error('Failed to open shared report:', err))
-          }}
+          onOpenShared={openSharedReport}
         />
       )}
 
@@ -6569,9 +6583,9 @@ function renderPrintBlock(block: ReportBlock, dp: DesignPack, report?: ReportDat
 
 // ── Report Picker ───────────────────────────────────────────────────────────
 
-function ReportPicker({ docs, userName, onOpen, onNew, onDelete }: {
-  docs: ReportDoc[]; userName?: string | null
-  onOpen: (d: ReportDoc) => void; onNew: () => void
+function ReportPicker({ docs, sharedDocs, userName, onOpen, onOpenShared, onNew, onDelete }: {
+  docs: ReportDoc[]; sharedDocs?: SharedDocEntry[]; userName?: string | null
+  onOpen: (d: ReportDoc) => void; onOpenShared?: (docId: string) => void; onNew: () => void
   onDelete: (docId: string) => Promise<void>
 }) {
   const [confirmId, setConfirmId] = useState<string | null>(null)
@@ -6596,38 +6610,65 @@ function ReportPicker({ docs, userName, onOpen, onNew, onDelete }: {
             <p className="mt-0.5 text-sm text-[var(--rb-text-2)]">Open an existing report or start a new one.</p>
           </div>
         </div>
-        <div className="flex flex-col gap-2">
-          {docs.map((doc) => (
-            <div key={doc.id} className="flex items-center gap-2 rounded-xl border border-[var(--rb-border)] bg-[var(--rb-panel)] px-5 py-4 transition hover:border-[#C9A84C]/30">
-              <button className="min-w-0 flex-1 text-left" onClick={() => onOpen(doc)}>
-                <p className="truncate text-sm font-semibold text-[var(--rb-text)]">{doc.name || 'Untitled'}</p>
-                <p className="mt-0.5 text-xs text-[var(--rb-text-3)]">{formatDate(doc.updatedAt)}</p>
-              </button>
-              <span className="shrink-0 text-xs font-medium text-[#C9A84C]">Open →</span>
-              {confirmId === doc.id ? (
-                <div className="flex shrink-0 items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1">
-                  <span className="text-xs text-red-400">Delete?</span>
-                  <button
-                    onClick={() => handleDelete(doc.id)}
-                    disabled={!!deletingId}
-                    className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-400 transition hover:bg-red-500/20 disabled:opacity-50"
-                  >
-                    {deletingId === doc.id ? '…' : 'Yes'}
+
+        {docs.length > 0 && (
+          <>
+            {(sharedDocs?.length ?? 0) > 0 && (
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--rb-text-3)]">My Reports</p>
+            )}
+            <div className="flex flex-col gap-2">
+              {docs.map((doc) => (
+                <div key={doc.id} className="flex items-center gap-2 rounded-xl border border-[var(--rb-border)] bg-[var(--rb-panel)] px-5 py-4 transition hover:border-[#C9A84C]/30">
+                  <button className="min-w-0 flex-1 text-left" onClick={() => onOpen(doc)}>
+                    <p className="truncate text-sm font-semibold text-[var(--rb-text)]">{doc.name || 'Untitled'}</p>
+                    <p className="mt-0.5 text-xs text-[var(--rb-text-3)]">{formatDate(doc.updatedAt)}</p>
                   </button>
-                  <button onClick={() => setConfirmId(null)} className="rounded px-1.5 py-0.5 text-[10px] text-[var(--rb-text-3)] transition hover:text-[var(--rb-text)]">No</button>
+                  <span className="shrink-0 text-xs font-medium text-[#C9A84C]">Open →</span>
+                  {confirmId === doc.id ? (
+                    <div className="flex shrink-0 items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1">
+                      <span className="text-xs text-red-400">Delete?</span>
+                      <button
+                        onClick={() => handleDelete(doc.id)}
+                        disabled={!!deletingId}
+                        className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-400 transition hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        {deletingId === doc.id ? '…' : 'Yes'}
+                      </button>
+                      <button onClick={() => setConfirmId(null)} className="rounded px-1.5 py-0.5 text-[10px] text-[var(--rb-text-3)] transition hover:text-[var(--rb-text)]">No</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmId(doc.id) }}
+                      title="Delete report"
+                      className="shrink-0 rounded p-1.5 text-slate-600 transition hover:bg-red-500/10 hover:text-red-400"
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                  )}
                 </div>
-              ) : (
-                <button
-                  onClick={(e) => { e.stopPropagation(); setConfirmId(doc.id) }}
-                  title="Delete report"
-                  className="shrink-0 rounded p-1.5 text-slate-600 transition hover:bg-red-500/10 hover:text-red-400"
-                >
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                </button>
-              )}
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
+
+        {sharedDocs && sharedDocs.length > 0 && (
+          <>
+            <p className={`mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--rb-text-3)] ${docs.length > 0 ? 'mt-6' : ''}`}>Shared With You</p>
+            <div className="flex flex-col gap-2">
+              {sharedDocs.map((doc) => (
+                <div key={doc.docId} className="flex items-center gap-2 rounded-xl border border-[var(--rb-border)] bg-[var(--rb-panel)] px-5 py-4 transition hover:border-[#C9A84C]/30">
+                  <button className="min-w-0 flex-1 text-left" onClick={() => onOpenShared?.(doc.docId)}>
+                    <p className="truncate text-sm font-semibold text-[var(--rb-text)]">{doc.name || 'Untitled'}</p>
+                    <p className="mt-0.5 text-xs text-[var(--rb-text-3)]">By {doc.ownerEmail}</p>
+                  </button>
+                  <span className="shrink-0 rounded-full border border-[var(--rb-border)] px-2 py-0.5 text-[10px] font-medium text-[var(--rb-text-2)]">{doc.role}</span>
+                  <span className="shrink-0 text-xs font-medium text-[#C9A84C]">Open →</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         <button onClick={onNew} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 py-4 text-sm font-medium text-slate-400 transition hover:border-[#C9A84C] hover:text-[#C9A84C]">
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
           New Report

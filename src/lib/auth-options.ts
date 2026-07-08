@@ -2,6 +2,7 @@ import type { NextAuthOptions } from 'next-auth'
 import GoogleProvider from 'next-auth/providers/google'
 import CredentialsProvider from 'next-auth/providers/credentials'
 import { adminAuth } from './firebase-admin'
+import { autoAcceptPendingInvitations } from './document-permissions'
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -56,6 +57,11 @@ export const authOptions: NextAuthOptions = {
           }
         } else {
           token.uid = user.id
+        }
+        // Link any documents shared with this email (via pending invitation) to the
+        // now-known account, so they immediately show up under "Shared With Me".
+        if (user.email) {
+          await autoAcceptPendingInvitations(token.uid as string, user.email)
         }
       }
       return token
