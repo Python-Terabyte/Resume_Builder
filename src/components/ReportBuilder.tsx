@@ -6231,6 +6231,12 @@ function PrintView({ report, dp }: { report: ReportData; dp: DesignPack }) {
             key={page.id}
             style={{
               ...PAGE_DIV,
+              // Fixed (not min) height: lets the table below stretch to exactly one
+              // page so the browser pushes the footer row to the bottom when content
+              // is short. Overflow stays visible, so pages whose content genuinely
+              // spans multiple physical pages still paginate/repeat thead+tfoot normally.
+              height: pageH,
+              minHeight: undefined,
               pageBreakBefore: pageIdx === 0 && !report.coverPage.enabled ? 'avoid' : 'always',
             }}
           >
@@ -6256,8 +6262,11 @@ function PrintView({ report, dp }: { report: ReportData; dp: DesignPack }) {
 
             {/* Table — browser repeats <thead> at the top and <tfoot> at the bottom of every
                 physical page when the table spans multiple pages.
-                paddingBottom on <th> = gap after header; paddingTop on tfoot <td> = gap before footer. */}
-            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', position: 'relative', zIndex: 1 }}>
+                paddingBottom on <th> = gap after header; paddingTop on tfoot <td> = gap before footer.
+                height: 100% (of the fixed-height page div) makes the browser distribute any
+                leftover space to the unconstrained tbody row, pinning tfoot to the page bottom
+                instead of letting it hug short content. */}
+            <table style={{ width: '100%', height: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', position: 'relative', zIndex: 1 }}>
               {showHeader && (
                 <thead>
                   <tr>
